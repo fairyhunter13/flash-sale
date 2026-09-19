@@ -16,7 +16,7 @@ async function openSale(stock: number) {
 }
 
 beforeAll(() => {
-  redis = new Redis(inject('redisUrl'))
+  redis = new Redis(inject('redisUrl'), { db: 1 })
 })
 
 afterAll(async () => {

@@ -84,4 +84,27 @@ export class Gate {
     const value = await this.redis.get(KEY.stock)
     return value === null ? 0 : Number(value)
   }
+
+  /**
+   * The count and the window in one round trip. The window is read from Redis
+   * and never from the environment, so the answer names the same window that
+   * reserve.lua enforces.
+   */
+  async snapshot(): Promise<Snapshot> {
+    const [stock, window] = await Promise.all([
+      this.redis.get(KEY.stock),
+      this.redis.hmget(KEY.window, 'start_ms', 'end_ms'),
+    ])
+    return {
+      left: stock === null ? 0 : Number(stock),
+      startMs: Number(window[0]),
+      endMs: Number(window[1]),
+    }
+  }
+}
+
+export type Snapshot = {
+  readonly left: number
+  readonly startMs: number
+  readonly endMs: number
 }
