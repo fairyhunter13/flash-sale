@@ -148,7 +148,7 @@ Every number below names the command that produced it.
 | Measure | Number | Command |
 | --- | --- | --- |
 | Buyers, and the units they took | 10,000 buyers, exactly 1,000 won | `npm run stress` |
-| Time for all 10,000 | 1.64 s, so 6,095 purchase requests a second | `npm run stress` |
+| Time for all 10,000 | 1.6 s to 2.0 s over 3 runs, so 5,100 to 6,100 a second | `npm run stress` |
 | Postgres backends at the peak | 20, for 500 open sockets | `npm run stress` |
 | `GET /api/sale` throughput | 27,728 a second, p50 13 ms, p99 145 ms | `npm run bench` |
 | `POST /api/purchase` throughput | 11,529 a second, p50 40 ms, p99 91 ms | `npm run bench` |
@@ -186,7 +186,9 @@ opens, whatever arrives in front of it.
 | 500 | 20 | 20 | 6,095 |
 | 1,000 | 60 | 60 | 5,817 |
 
-Tripling the cap did not raise the throughput, so the pool is not what limits this box.
+Tripling the cap did not raise the throughput, so the pool is not what limits this box. Each row is
+one run and not an average. Repeats of the first row read 1.6 s to 2.0 s, and the backend peak was
+20 every time.
 
 **What the cap moves, rather than removes.** A bounded pool turns "the database falls over" into
 "the request waits in the application". That is the better failure, because it is bounded and
