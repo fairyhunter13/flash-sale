@@ -24,7 +24,7 @@ export function registerRoutes(app: FastifyInstance, gate: Gate): void {
     try {
       return await readSale(gate)
     } catch {
-      // A Redis that does not answer is a fault, and never a sold-out sale.
+      // A store that does not answer is a fault, and never a sold-out sale.
       // The body carries no state field at all, so no caller can read one.
       return reply.code(500).send({ error: 'the sale cannot be read' })
     }
@@ -38,8 +38,7 @@ export function registerRoutes(app: FastifyInstance, gate: Gate): void {
     }
 
     try {
-      const { outcome } = await gate.reserve(userId)
-      return { outcome }
+      return { outcome: await gate.reserve(userId) }
     } catch {
       return reply.code(500).send({ error: 'the purchase cannot be decided' })
     }

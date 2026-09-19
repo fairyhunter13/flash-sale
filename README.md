@@ -1,37 +1,37 @@
 # Flash sale
 
-One product, 1,000 units, a start time and an end time. Thousands of buyers arrive at once, and
-each one may take one unit. No unit is ever sold twice.
+One product, 1,000 units, a start time and an end time. Thousands of buyers arrive at once, and each
+one may take one unit. No unit is ever sold twice.
 
-TypeScript on Node 24. Fastify for the API, Redis 7 for the decision, Postgres 16 for the record,
-React 19 for the page.
+TypeScript on Node 24. Fastify for the API, Postgres 16 for the decision and the record, React 19
+for the page.
 
 ## Run it
 
 You need Node 24 or newer and Docker.
 
 ```sh
-cp .env.example .env     # the ports, the stock and the sale window
+cp .env.example .env     # the port, the stock and the sale window
 npm install
-npm run db:up            # Redis and Postgres in Docker
+npm run db:up            # Postgres in Docker
 npm run build            # type checks 3 workspaces, and builds the page
-npm start                # the server on :3000, and the recorder beside it
+npm start                # the server on :3000
 ```
 
 Open `http://127.0.0.1:3000`. The page is served by the same server as the API, so there is one URL
 and no CORS.
 
 `.env.example` opens the sale in 2026 and closes it in 2036, so the sale is open the moment you
-start. Change `SALE_START` and `SALE_END` to see the other states. Where Redis or Postgres already
-runs on your box, change `REDIS_PORT` and `POSTGRES_PORT`, and change the two URLs beside them.
+start. Change `SALE_START` and `SALE_END` to see the other states. Where Postgres already runs on
+your box, change `POSTGRES_PORT` and the `DATABASE_URL` beside it.
 
-**Tests.** `npm test` runs all 51. Redis and Postgres are real, started by testcontainers, so Docker
-must be running. Nothing is mocked.
+**Tests.** `npm test` runs all 41. Postgres is real, started by testcontainers, so Docker must be
+running. Nothing is mocked.
 
-**While you develop.** `npm run dev` runs the server, the recorder and Vite together. Vite serves
-the page on `http://127.0.0.1:5173` and sends `/api` to the server.
+**While you develop.** `npm run dev` runs the server and Vite together. Vite serves the page on
+`http://127.0.0.1:5173` and sends `/api` to the server.
 
-**Stop.** `npm run db:down` removes both containers and their data.
+**Stop.** `npm run db:down` removes the container and its data.
 
 ## Run the stress test
 
@@ -40,20 +40,26 @@ npm start                # in one terminal
 npm run stress           # in another
 ```
 
-It empties the sale and the orders table, then drives **10,000 buyers over 500 connections** and
-reads all 3 stores. It refuses to run against any host but localhost, because it truncates a table.
+It empties the sale and the orders table, then drives **10,000 buyers over 500 connections**. It
+refuses to run against any host but localhost, because it truncates a table.
 
 Expected outcome, and the run fails loudly on any other:
 
 ```
-ok  won                 1000  (want 1000)
-ok  sold-out            9000  (want 9000)
-ok  other                  0  (want 0)
-ok  redis stock left       0  (want 0)
-ok  redis buyers        1000  (want 1000)
-ok  pg orders           1000  (want 1000)
+ok  won           1000  (want 1000)
+ok  sold-out      9000  (want 9000)
+ok  other            0  (want 0)
+ok  units left       0  (want 0)
+ok  pg orders     1000  (want 1000)
+
+10000 buyers over 500 connections in 1.64 s
+6095 purchase requests a second
+20 Postgres backends at the peak, for 500 open sockets
 PASS
 ```
+
+The last line is the one to read twice. 500 open sockets produced 20 database connections, because
+`DB_POOL_MAX` is 20. See [Scaling](#scaling).
 
 `npm run bench` is the other half. It measures throughput with autocannon and it never checks a
 count, because autocannon reads its `amount` as a per-connection quota.
@@ -64,24 +70,30 @@ count, because autocannon reads its `amount` as a per-connection quota.
 flowchart LR
     B["Buyer<br/>React page"]
     F["Fastify<br/>4 routes + SSE"]
-    R[("Redis 7<br/>stock, buyers, window")]
-    S["sale:wins<br/>Redis stream"]
-    C["Recorder<br/>consumer group"]
-    P[("Postgres 16<br/>orders")]
+    G["Gate<br/>250 ms snapshot"]
+    P[("Postgres 16<br/>stock, orders")]
 
     B -- "POST /api/purchase" --> F
     B -- "GET /api/sale/stream (SSE)" --> F
     B -- "GET /api/purchase/:userId" --> F
-    F -- "EVALSHA reserve.lua" --> R
-    R -- "XADD on a win" --> S
-    S -- "XREADGROUP, XAUTOCLAIM" --> C
-    C -- "INSERT ... ON CONFLICT DO NOTHING" --> P
+    F --> G
+    G -- "refused from cache<br/>no connection taken" --> F
+    G -- "BEGIN / 3 statements / COMMIT" --> P
     F -- "SELECT" --> P
 ```
 
-**Redis decides, and Postgres remembers.** The decision is one Lua script, so Redis runs the whole
-read and write with nothing in between. The record is written after the fact by a separate process,
-so a slow disk never slows a buyer down.
+**One store decides and remembers.** The winner is chosen by one Postgres transaction, and the same
+transaction writes the order. So there is no window where a buyer holds a unit that no table records.
+
+**The gate has two paths, and the cheap one runs far more often.** A flash sale is a load-shedding
+problem wearing an inventory problem's clothes. Where 1,000 units meet 1,000,000 buyers, 999,000 of
+them must be refused fast, cheaply and safely. `server/src/gate/gate.ts` reuses one read of the sale
+for 250 ms, and that cached read answers `not-open`, `over` and `sold-out` with no database contact
+at all.
+
+**The cache can never sell a unit.** Both facts it holds move one way only. The sale window never
+changes after the seed, and `units_left` only ever falls. So a stale read can refuse a buyer who
+would have lost anyway, and it can never let one through. Only the transaction says `won`.
 
 **The 4 routes.**
 
@@ -97,109 +109,176 @@ so 1,000 pages cost 1 read and not 1,000.
 
 ## Why no unit is oversold
 
-Everything that decides an outcome happens inside `server/src/gate/reserve.lua`. Redis runs one
-script at a time, so no second buyer reads the counter between the first buyer's read and write.
+Everything that decides an outcome happens inside one transaction in `server/src/gate/gate.ts`. It
+runs 3 statements in order, and it stops at the first one that fails.
 
-The script does 4 things in order, and it stops at the first one that fails.
+1. `SELECT units_left, start_at, end_at FROM stock WHERE id = 1`. This read takes no lock. Where the
+   clock sits outside the window, or the count is already 0, the transaction rolls back and the
+   buyer reads `not-open`, `over` or `sold-out`. So the 9,000 losers leave before they ever touch
+   the row the winners compete for.
+2. `INSERT INTO orders (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING RETURNING user_id`. No
+   returned row means the buyer already holds a unit, so the answer is `already-bought`. The
+   conflict clause is measurably cheaper than catching error 23505.
+3. `UPDATE stock SET units_left = units_left - 1 WHERE id = 1 AND units_left > 0 RETURNING
+   units_left`. **This statement is the whole guarantee.** Postgres locks that one row for the rest
+   of the transaction, so the second buyer reads the count only after the first buyer commits or
+   rolls back. No returned row means the last unit went to somebody else, so the answer is
+   `sold-out` and the insert above is rolled back with it.
 
-1. Reads `sale:window`, and refuses with `not-open` or `over` where the clock is outside it. The
-   clock is passed in as an argument, so a test needs no fake clock.
-2. Adds the buyer to the `sale:buyers` set. An add that changes nothing means the buyer already
-   holds a unit, so the answer is `already-bought`.
-3. Reads `sale:stock`. At 0 the buyer is removed from the set again, and the answer is `sold-out`.
-4. Decrements the counter and appends the win to the `sale:wins` stream.
+A commit writes the order and the decrement together. A rollback writes neither. So no buyer is ever
+recorded without a unit, and no unit is ever lost without a buyer.
 
-**The unique index is the second guard.** `orders.user_id` is unique, so a defect in the script
-above still cannot write a second row for one buyer. The recorder inserts with
-`ON CONFLICT (user_id) DO NOTHING`, so a replayed batch writes nothing and raises nothing.
+**Three guards, and the transaction is only the first.**
 
-**The row is written before the entry is acknowledged.** A recorder that dies between the two
-replays the batch, and the replay writes nothing new. A lost win is the failure that matters. A
-repeated win is not.
+| Guard | Where | What it refuses |
+| --- | --- | --- |
+| `AND units_left > 0` | the `UPDATE` above | the oversell |
+| `UNIQUE (user_id)` | `orders_user_id_key` | a second unit for one buyer |
+| `CHECK (units_left >= 0)` | `stock_never_negative` | a future defect, as a failed transaction |
+
+The second and third guards are in `server/sql/schema.sql`, and `server/test/schema.spec.ts` proves
+each one by trying to break it. A defect in the gate then costs a rolled-back transaction, never a
+sold unit.
 
 ## Measured
 
-On this box: Intel Core Ultra 9 275HX, 24 cores, 62 GB RAM, Node 24.11.1, Redis 7 and Postgres 16
-in Docker. Every number below names the command that produced it.
+On this box: Intel Core Ultra 9 275HX, 24 cores, 62 GB RAM, Node 24.11.1, Postgres 16 in Docker.
+Every number below names the command that produced it.
 
 | Measure | Number | Command |
 | --- | --- | --- |
 | Buyers, and the units they took | 10,000 buyers, exactly 1,000 won | `npm run stress` |
-| Time for all 10,000 | 1.10 s, so 9,068 purchase requests a second | `npm run stress` |
-| `GET /api/sale` throughput | 26,461 a second, p50 18 ms, p99 26 ms | `npm run bench` |
-| `POST /api/purchase` throughput | 28,853 a second, p50 16 ms, p99 26 ms | `npm run bench` |
+| Time for all 10,000 | 1.64 s, so 6,095 purchase requests a second | `npm run stress` |
+| Postgres backends at the peak | 20, for 500 open sockets | `npm run stress` |
+| `GET /api/sale` throughput | 27,728 a second, p50 13 ms, p99 145 ms | `npm run bench` |
+| `POST /api/purchase` throughput | 11,529 a second, p50 40 ms, p99 91 ms | `npm run bench` |
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
-| Tests | 51, over real Redis and real Postgres | `npm test` |
+| Tests | 41, over real Postgres | `npm test` |
 
-**What the stress number means.** 9,068 a second is the rate at which this one Node process decided
-10,000 outcomes correctly. It is lower than the bench figure because the stress run creates 10,000
-distinct buyers, so every one of them writes to the Redis set and 1,000 of them append to the
-stream. The bench run repeats one buyer, so it measures the cheapest path.
+**The two throughput numbers are the two paths.** `GET /api/sale` is answered from the 250 ms
+snapshot, so it costs no database round trip and runs at 27,728 a second. `POST /api/purchase` opens
+a real transaction on every request, so it runs at 11,529 a second. The cheap path is 2.4 times the
+expensive one, and in a real sale it is the path almost everybody takes.
 
-**What it does not mean.** The load generator and the server share 24 cores, so both numbers are a
-floor and not a ceiling. Nothing here is tuned. There is one Node process and no cluster.
+**What the numbers do not mean.** The load generator and the server share 24 cores, so every number
+is a floor and not a ceiling. Nothing here is tuned. There is one Node process and no cluster.
+
+## Scaling
+
+The brief asks what breaks under a larger load. Each bottleneck below carries the measurement that
+found it, and the change that moves it.
+
+### Database connections, which is the one people fear
+
+**The fear:** a million buyers open a million connections, Postgres runs out, and every request
+waits.
+
+**Why it does not happen here.** Postgres runs one operating-system process per connection, at about
+5 MB each, and its default `max_connections` is 100. So the fear is correct about Postgres and wrong
+about the path to it. A browser socket is not a database connection. `server/src/server.ts` builds
+one `pg.Pool` with `max: DB_POOL_MAX`, and that number is the most connections this process ever
+opens, whatever arrives in front of it.
+
+**Measured, twice, and the peak tracks the cap and not the sockets:**
+
+| Open sockets | `DB_POOL_MAX` | Peak Postgres backends | Requests a second |
+| --- | --- | --- | --- |
+| 500 | 20 | 20 | 6,095 |
+| 1,000 | 60 | 60 | 5,817 |
+
+Tripling the cap did not raise the throughput, so the pool is not what limits this box.
+
+**What the cap moves, rather than removes.** A bounded pool turns "the database falls over" into
+"the request waits in the application". That is the better failure, because it is bounded and
+visible, but it is still a queue. Two things keep the queue short. First, the fast path: a refused
+buyer never asks the pool for anything, and `server/test/gate.spec.ts` proves it by counting calls
+to `pool.connect`. Second, the slow path is 3 statements on one indexed row, at 40 ms p50 under 500
+connections.
+
+**Where one process is not enough.** Put PgBouncer in transaction mode in front of Postgres. It
+multiplexes thousands of client connections onto tens of server connections, and its `pool_size` is
+sized from the core count and never from the client count. PostgreSQL 18 added asynchronous I/O, but
+it still ships no built-in pooler, so this stays a separate component.
+
+### The one stock row
+
+**What breaks.** Every winner locks row `id = 1`, so the winners are serialized by design. At 1,000
+units that is 1,000 serialized transactions, which is not a problem. At 1,000,000 units it is.
+
+**The change.** Split the stock into `N` rows of `stock / N` and hash the buyer to one of them. That
+trades a perfect sell-out for throughput, because one shard can empty while another still holds
+units. It is worth doing only when the unit count is large enough for the imbalance to be small.
+
+### Accepting the load before it reaches the API
+
+**What breaks.** One Node process and one pool cannot absorb a million requests in the same second,
+whatever the database does.
+
+**The change, in the order it pays off.**
+
+1. **More API processes.** Fastify holds no state, so `N` processes behind one load balancer answer
+   `N` times the requests. The decision stays correct, because the decision is in the transaction
+   and not in the process.
+2. **A waiting room.** Admit a bounded number of buyers per second to the purchase route and give
+   everyone else a queue position. The sale sells out at the same moment either way, and this is the
+   difference between a fast refusal and a timeout.
+3. **An order queue.** Where the write must move off the request path, the transaction becomes an
+   append to a durable log and a separate worker writes the order. This repository does not do it,
+   because the current cost is 40 ms and the queue adds a second store, a consumer group and a
+   replay path for no measured gain.
+
+### The page, and the open sockets
+
+10,000 open SSE sockets on one Node process is a memory limit and not a CPU one, because one ticker
+serves them all. The static files belong on a CDN, and the SSE stream stays on the API.
+
+### What breaks first, in order
+
+1. The single Node process, on open sockets.
+2. The connection pool queue, once arrivals exceed what 20 connections retire.
+3. The single stock row, but only at a unit count far above 1,000.
 
 ## Trade-offs
 
-**Redis holds the truth during the sale, and Postgres holds it after.** A single Postgres row lock
-would also prevent an oversell, and it would cost a disk write on the buyer's own request. Redis
-answers from memory, and the durable write moves off the request path.
+**One store, and not a cache in front of a database.** Redis plus Postgres is the usual answer, and
+an earlier version of this repository was built that way. It was removed. The cache it held is one
+boolean and one integer, both monotonic, so a 250 ms field inside the process holds them just as
+safely. What that buys: one fewer container, one fewer failure mode, no window where the two stores
+disagree, and a decision written in TypeScript that the compiler checks. What it gives up: the
+refusal cache is per process, so 10 API processes hold 10 copies. Each copy is at most 250 ms stale,
+and staleness can only refuse, never sell.
 
-**Postgres, and not SQLite.** For 1,000 rows written by 1 consumer, SQLite is enough and it needs no
+**A transaction, and not a Lua script.** A Lua script in Redis is atomic and fast, and it is also a
+second language that no type checker reads. The 3 statements above are ordinary SQL, and the lock is
+a side effect of the `UPDATE` rather than a thing to acquire and release. A measured probe of 10,000
+buyers ran this 3-statement gate at 8,183 buyers a second warm, against 6,878 for a 2-statement
+version without the lock-free window read. **The version with more statements is the faster one**,
+because the window read lets the losers leave before they queue for the hot row.
+
+**Postgres, and not SQLite.** For 1,000 rows written by one process, SQLite is enough and it needs no
 container. Postgres is here because it is the store a real sale uses, so the design does not change
-when the sale grows. That is the trade: one more container in exchange for a design that survives
-the next requirement.
+when the sale grows. That is the trade: one container in exchange for a design that survives the
+next requirement.
 
-**Nothing is mocked.** The brief allows a mocked cloud service. Instead the queue is a real Redis
-stream with a consumer group, the cache is a real Redis key, and the database is real Postgres. All
-3 are the managed services a deployment buys, so the code does not change when they move.
+**Nothing is mocked.** The brief allows a mocked cloud service. The database is real Postgres, in
+Docker for a run and started by testcontainers for a test. So the code does not change when it moves
+to a managed instance.
 
 **Server-sent events, and not polling.** The page needs one direction only, so a WebSocket buys
 nothing. SSE reconnects by itself, and it is plain HTTP.
 
-**A crash loses no win.** The win is in the Redis stream before the buyer reads the answer. A
-recorder that dies is replaced, and `XAUTOCLAIM` hands the dead reader's entries to the next one. A
-lost consumer group rebuilds itself at id 0, which is what Redis needs after a restart with no saved
-data.
+**Two npm workspaces, and not two repositories.** `server/` and `web/` build and test from one root,
+so one `npm ci` and one `npm test` cover both. What it gives up: the root `package.json` holds
+scripts that fan out, so a reader must open it to see what `npm test` runs.
 
 **What is deliberately absent.** No authentication, because the brief names a username or an email
 as the whole identity. No payment. No deployment. No rate limit, which a real sale needs and this
 one does not claim.
 
-## Scaling
-
-The design holds at 10 times the load, and each step below is a change in count and not in shape.
-
-**More API processes.** Fastify holds no state, so `N` processes behind one load balancer answer
-`N` times the requests. The decision stays correct, because the decision is in Redis and not in the
-process.
-
-**One Redis, and the script is the limit.** A single Redis node runs about 100,000 of these scripts
-a second, so one node carries 100,000 buyers a second. The sale is one product, so the counter
-cannot be sharded by key. Where one product must exceed one node, the stock is split into `N`
-counters of `stock / N` and the buyer is hashed to one of them, which trades a perfect sell-out for
-throughput.
-
-**More recorders.** The consumer group already allows it. Each new recorder takes a share of the
-stream, and `XAUTOCLAIM` covers the one that dies. Postgres sees batched inserts and never the
-request rate.
-
-**The page.** It is static files. A CDN serves them, and the SSE stream stays on the API.
-
-**What breaks first.** The single Redis node. Before that, the 10,000 open SSE sockets on one Node
-process, which is a memory limit and not a CPU one.
-
 ## Layout
 
 ```
-server/   Fastify, the Lua gate, the recorder, 44 tests
+server/   Fastify, the Postgres gate, the schema, 34 tests
 web/      React 19 on Vite, 7 tests
 stress/   the correctness run, and the throughput bench
-scripts/  clean-clone-check.sh, which proves a fresh clone runs
-docs/     the development plan, the test plan, the decisions
-concepts/ the design, authored before the code
 ```
-
-`docs/development-plan.md` and `docs/test-plan.md` are the two documents the work was done against.
-Every test row names the test that proves it. `docs/decisions.md` holds one question and one answer
-for each decision above.

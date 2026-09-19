@@ -2,8 +2,9 @@ export type Config = {
   readonly stock: number
   readonly startMs: number
   readonly endMs: number
-  readonly redisUrl: string
   readonly databaseUrl: string
+  /** The most Postgres connections this process ever opens. */
+  readonly dbPoolMax: number
   readonly port: number
   readonly host: string
 }
@@ -98,8 +99,8 @@ export function readConfig(env: Env = process.env): Config {
   const stock = read.wholeNumber('SALE_STOCK', '1000')
   const startMs = read.instant('SALE_START', '2026-01-01T00:00:00Z')
   const endMs = read.instant('SALE_END', '2036-01-01T00:00:00Z')
-  const redisUrl = read.url('REDIS_URL', 'redis', 'redis://localhost:6379')
   const databaseUrl = read.url('DATABASE_URL', 'postgres', 'postgres://flash:flash@localhost:5432/flash')
+  const dbPoolMax = read.wholeNumber('DB_POOL_MAX', '20')
   const port = read.wholeNumber('PORT', '3000')
   const host = read.text('HOST', '0.0.0.0')
 
@@ -111,5 +112,5 @@ export function readConfig(env: Env = process.env): Config {
 
   if (read.problems.length > 0) throw new ConfigError(read.problems)
 
-  return Object.freeze({ stock, startMs, endMs, redisUrl, databaseUrl, port, host })
+  return Object.freeze({ stock, startMs, endMs, databaseUrl, dbPoolMax, port, host })
 }

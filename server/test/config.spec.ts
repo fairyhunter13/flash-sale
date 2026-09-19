@@ -5,8 +5,8 @@ const complete = {
   SALE_STOCK: '1000',
   SALE_START: '2026-01-01T00:00:00Z',
   SALE_END: '2036-01-01T00:00:00Z',
-  REDIS_URL: 'redis://localhost:6379',
   DATABASE_URL: 'postgres://flash:flash@localhost:5432/flash',
+  DB_POOL_MAX: '20',
   PORT: '3000',
   HOST: '0.0.0.0',
 }
@@ -32,7 +32,8 @@ describe('the configuration', () => {
     expect(config.stock).toBe(1000)
     expect(config.startMs).toBe(Date.parse('2026-01-01T00:00:00Z'))
     expect(config.endMs).toBe(Date.parse('2036-01-01T00:00:00Z'))
-    expect(config.redisUrl).toBe('redis://localhost:6379')
+    expect(config.databaseUrl).toBe('postgres://flash:flash@localhost:5432/flash')
+    expect(config.dbPoolMax).toBe(20)
     expect(config.port).toBe(3000)
     expect(config.host).toBe('0.0.0.0')
   })
@@ -50,7 +51,13 @@ describe('the configuration', () => {
     expect(() => readConfig({ ...complete, SALE_STOCK: '0' })).toThrow(/SALE_STOCK is 0/)
   })
 
-  it('a REDIS_URL that is not a redis address is refused', () => {
-    expect(() => readConfig({ ...complete, REDIS_URL: 'http://localhost:6379' })).toThrow(/It must start with redis/)
+  it('a DATABASE_URL that is not a postgres address is refused', () => {
+    expect(() => readConfig({ ...complete, DATABASE_URL: 'mysql://localhost:3306/flash' })).toThrow(
+      /It must start with postgres/,
+    )
+  })
+
+  it('a DB_POOL_MAX of zero is refused, because the pool would never open', () => {
+    expect(() => readConfig({ ...complete, DB_POOL_MAX: '0' })).toThrow(/DB_POOL_MAX is 0/)
   })
 })

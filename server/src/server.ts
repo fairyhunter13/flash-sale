@@ -2,7 +2,6 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import Fastify, { type FastifyInstance } from 'fastify'
 import fastifyStatic from '@fastify/static'
-import { Redis } from 'ioredis'
 import { Pool } from 'pg'
 import { readConfig, type Config } from './config.ts'
 import { Gate } from './gate/gate.ts'
@@ -20,13 +19,8 @@ export type App = {
  * Builds the server without listening, so a test drives it through
  * `fastify.inject` and needs no port.
  */
-export async function buildApp(
-  config: Config,
-  redis: Redis,
-  pool: Pool,
-  tickMs?: number,
-): Promise<App> {
-  const gate = new Gate(redis)
+export async function buildApp(config: Config, pool: Pool, tickMs?: number): Promise<App> {
+  const gate = new Gate(pool)
   await gate.seed({ stock: config.stock, startMs: config.startMs, endMs: config.endMs })
 
   // A hijacked SSE socket is never idle, so a shutdown waits forever without
@@ -58,9 +52,11 @@ async function serveWeb(fastify: FastifyInstance): Promise<void> {
 
 async function main(): Promise<void> {
   const config = readConfig()
-  const redis = new Redis(config.redisUrl)
-  const pool = new Pool({ connectionString: config.databaseUrl })
-  const app = await buildApp(config, redis, pool)
+  // The cap is the whole answer to "what if a million people arrive". Postgres
+  // never sees more than DB_POOL_MAX connections from this process, whatever
+  // the number of open sockets in front of it.
+  const pool = new Pool({ connectionString: config.databaseUrl, max: config.dbPoolMax })
+  const app = await buildApp(config, pool)
   await serveWeb(app.fastify)
   await app.fastify.listen({ port: config.port, host: config.host })
 }

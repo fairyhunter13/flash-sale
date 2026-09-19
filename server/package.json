@@ -6,19 +6,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node --env-file-if-exists=../.env --watch --experimental-strip-types src/server.ts",
-    "recorder": "node --env-file-if-exists=../.env --watch --experimental-strip-types src/recorder/main.ts",
-    "recorder:start": "node --env-file-if-exists=../.env --experimental-strip-types src/recorder/main.ts",
     "start": "node --env-file-if-exists=../.env --experimental-strip-types src/server.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.4",
     "fastify": "^5.8.0",
-    "ioredis": "^5.9.0",
     "pg": "^8.16.0"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^12.0.0",
-    "@testcontainers/redis": "^12.0.0",
     "@types/pg": "^8.15.0",
     "testcontainers": "^12.0.0"
   }

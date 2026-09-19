@@ -1,6 +1,5 @@
 import Fastify from 'fastify'
-import { Redis } from 'ioredis'
-import type { Pool } from 'pg'
+import { Pool } from 'pg'
 import { poolFor } from './setup/db.ts'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
 import type { Config } from '../src/config.ts'
@@ -11,34 +10,33 @@ import { buildApp, type App } from '../src/server.ts'
 const START = Date.parse('2026-06-01T00:00:00Z')
 const END = Date.parse('2036-06-01T00:00:00Z')
 
-function config(stock: number, redisUrl: string): Config {
+function config(stock: number): Config {
   return Object.freeze({
     stock,
     startMs: START,
     endMs: END,
-    redisUrl,
     databaseUrl: 'postgres://unused/unused',
+    dbPoolMax: 4,
     port: 0,
     host: '127.0.0.1',
   })
 }
 
-let redis: Redis
 let pool: Pool
 let app: App
 
 beforeAll(async () => {
-  redis = new Redis(inject('redisUrl'), { db: 2 })
   pool = await poolFor(inject('databaseUrl'), 't_routes')
 })
 
 afterAll(async () => {
-  await Promise.all([redis.quit(), pool.end()])
+  await pool.end()
 })
 
 beforeEach(async () => {
-  await redis.flushdb()
-  app = await buildApp(config(1000, inject('redisUrl')), redis, pool)
+  await pool.query('DELETE FROM orders')
+  await pool.query('DELETE FROM stock')
+  app = await buildApp(config(1000), pool)
 })
 
 afterEach(async () => {
@@ -78,7 +76,7 @@ describe('the routes', () => {
     expect(sale.json().stockLeft).toBe(999)
   })
 
-  it('an empty userId is refused before Redis is touched', async () => {
+  it('an empty userId is refused before the database is touched', async () => {
     const answer = await app.fastify.inject({
       method: 'POST',
       url: '/api/purchase',
@@ -87,20 +85,20 @@ describe('the routes', () => {
 
     expect(answer.statusCode).toBe(400)
     expect(answer.json()).not.toHaveProperty('outcome')
-    expect(await redis.get('sale:stock')).toBe('1000')
+    expect(await app.gate.stockLeft()).toBe(1000)
   })
 
-  it('a dead Redis gives 500 and no outcome', async () => {
-    // Port 1 answers nothing, and the client is told never to retry. So the
-    // routes hold a real Gate over a client that cannot reach an engine.
-    const dead = new Redis('redis://127.0.0.1:1', {
-      lazyConnect: true,
-      maxRetriesPerRequest: 0,
-      retryStrategy: () => null,
-      enableOfflineQueue: false,
+  it('a dead database gives 500 and no outcome', async () => {
+    // Port 1 answers nothing, so the routes hold a real Gate over a pool that
+    // cannot reach a server.
+    const dead = new Pool({
+      connectionString: 'postgres://flash:flash@127.0.0.1:1/flash',
+      connectionTimeoutMillis: 250,
+      max: 1,
     })
+    dead.on('error', () => {})
     const broken = Fastify({ logger: false })
-    registerRoutes(broken, new Gate(dead))
+    registerRoutes(broken, new Gate(dead, 0))
 
     const sale = await broken.inject({ method: 'GET', url: '/api/sale' })
     expect(sale.statusCode).toBe(500)
@@ -115,6 +113,6 @@ describe('the routes', () => {
     expect(purchase.json()).not.toHaveProperty('outcome')
 
     await broken.close()
-    dead.disconnect()
+    await dead.end().catch(() => {})
   })
 })

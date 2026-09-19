@@ -1,4 +1,3 @@
-import { Redis } from 'ioredis'
 import type { Pool } from 'pg'
 import { poolFor } from './setup/db.ts'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
@@ -8,13 +7,13 @@ import { buildApp, type App } from '../src/server.ts'
 const START = Date.parse('2026-06-01T00:00:00Z')
 const END = Date.parse('2036-06-01T00:00:00Z')
 
-function config(redisUrl: string): Config {
+function config(): Config {
   return Object.freeze({
     stock: 5,
     startMs: START,
     endMs: END,
-    redisUrl,
     databaseUrl: 'postgres://unused/unused',
+    dbPoolMax: 4,
     port: 0,
     host: '127.0.0.1',
   })
@@ -42,24 +41,23 @@ async function* saleEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Sal
 
 type SaleEvent = { state: string; stockLeft: number }
 
-let redis: Redis
 let pool: Pool
 let app: App
 let base: string
 
 beforeAll(async () => {
-  redis = new Redis(inject('redisUrl'), { db: 3 })
   pool = await poolFor(inject('databaseUrl'), 't_stream')
 })
 
 afterAll(async () => {
-  await Promise.all([redis.quit(), pool.end()])
+  await pool.end()
 })
 
 beforeEach(async () => {
-  await redis.flushdb()
+  await pool.query('DELETE FROM orders')
+  await pool.query('DELETE FROM stock')
   // A 20 ms tick keeps the test short. The server runs at the 250 ms default.
-  app = await buildApp(config(inject('redisUrl')), redis, pool, 20)
+  app = await buildApp(config(), pool, 20)
   base = await app.fastify.listen({ port: 0, host: '127.0.0.1' })
 })
 
