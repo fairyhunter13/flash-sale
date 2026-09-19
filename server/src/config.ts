@@ -1,0 +1,108 @@
+export type Config = {
+  readonly stock: number
+  readonly startMs: number
+  readonly endMs: number
+  readonly redisUrl: string
+  readonly databaseUrl: string
+  readonly port: number
+  readonly host: string
+}
+
+export class ConfigError extends Error {
+  readonly problems: readonly string[]
+
+  constructor(problems: readonly string[]) {
+    super(`The environment is not usable.\n  ${problems.join('\n  ')}`)
+    this.name = 'ConfigError'
+    this.problems = problems
+  }
+}
+
+type Env = Record<string, string | undefined>
+
+// Every problem is collected, because a boot that reports one missing variable
+// at a time costs the reader one restart for each one.
+class Reader {
+  readonly problems: string[] = []
+
+  constructor(private readonly env: Env) {}
+
+  private raw(name: string): string | undefined {
+    const value = this.env[name]?.trim()
+    return value === '' ? undefined : value
+  }
+
+  wholeNumber(name: string, example: string): number {
+    const value = this.raw(name)
+    if (value === undefined) {
+      this.problems.push(`${name} is not set. It must be a whole number above 0, for example ${example}.`)
+      return 0
+    }
+    const parsed = Number(value)
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+      this.problems.push(`${name} is ${value}. It must be a whole number above 0, for example ${example}.`)
+      return 0
+    }
+    return parsed
+  }
+
+  instant(name: string, example: string): number {
+    const value = this.raw(name)
+    if (value === undefined) {
+      this.problems.push(`${name} is not set. It must be a date and a time, for example ${example}.`)
+      return Number.NaN
+    }
+    const parsed = Date.parse(value)
+    if (Number.isNaN(parsed)) {
+      this.problems.push(`${name} is ${value}. It must be a date and a time, for example ${example}.`)
+      return Number.NaN
+    }
+    return parsed
+  }
+
+  url(name: string, scheme: string, example: string): string {
+    const value = this.raw(name)
+    if (value === undefined) {
+      this.problems.push(`${name} is not set. It must be an address, for example ${example}.`)
+      return ''
+    }
+    let parsed: URL
+    try {
+      parsed = new URL(value)
+    } catch {
+      this.problems.push(`${name} is ${value}. It must be an address, for example ${example}.`)
+      return ''
+    }
+    if (parsed.protocol !== `${scheme}:`) {
+      this.problems.push(`${name} starts with ${parsed.protocol} It must start with ${scheme}, for example ${example}.`)
+      return ''
+    }
+    return value
+  }
+
+  text(name: string, fallback: string): string {
+    return this.raw(name) ?? fallback
+  }
+}
+
+export function readConfig(env: Env = process.env): Config {
+  const read = new Reader(env)
+
+  const stock = read.wholeNumber('SALE_STOCK', '1000')
+  const startMs = read.instant('SALE_START', '2026-01-01T00:00:00Z')
+  const endMs = read.instant('SALE_END', '2036-01-01T00:00:00Z')
+  const redisUrl = read.url('REDIS_URL', 'redis', 'redis://localhost:6379')
+  const databaseUrl = read.url('DATABASE_URL', 'postgres', 'postgres://flash:flash@localhost:5432/flash')
+  const port = read.wholeNumber('PORT', '3000')
+  const host = read.text('HOST', '0.0.0.0')
+
+  if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && startMs >= endMs) {
+    read.problems.push(
+      `SALE_END is ${env['SALE_END']}. It must be after SALE_START, which is ${env['SALE_START']}.`,
+    )
+  }
+
+  if (read.problems.length > 0) throw new ConfigError(read.problems)
+
+  return Object.freeze({ stock, startMs, endMs, redisUrl, databaseUrl, port, host })
+}
