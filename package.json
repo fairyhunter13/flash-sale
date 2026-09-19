@@ -14,6 +14,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev": "concurrently -n server,recorder,web -c blue,magenta,green \"npm:dev -w server\" \"npm:recorder -w server\" \"npm:dev -w web\"",
+    "start": "concurrently -n server,recorder -c blue,magenta \"npm:start -w server\" \"npm:recorder:start -w server\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "stress": "npm run stress -w stress",

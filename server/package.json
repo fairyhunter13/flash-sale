@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "node --watch --experimental-strip-types src/server.ts",
-    "recorder": "node --watch --experimental-strip-types src/recorder/main.ts",
-    "start": "node --experimental-strip-types src/server.ts"
+    "dev": "node --env-file-if-exists=../.env --watch --experimental-strip-types src/server.ts",
+    "recorder": "node --env-file-if-exists=../.env --watch --experimental-strip-types src/recorder/main.ts",
+    "recorder:start": "node --env-file-if-exists=../.env --experimental-strip-types src/recorder/main.ts",
+    "start": "node --env-file-if-exists=../.env --experimental-strip-types src/server.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.4",
