@@ -14,10 +14,13 @@ export class SaleTicker {
   private timer: NodeJS.Timeout | undefined
   private last = ''
 
-  constructor(
-    private readonly gate: Gate,
-    private readonly tickMs: number = TICK_MS,
-  ) {}
+  private readonly gate: Gate
+  private readonly tickMs: number
+
+  constructor(gate: Gate, tickMs: number = TICK_MS) {
+    this.gate = gate
+    this.tickMs = tickMs
+  }
 
   add(reply: FastifyReply): void {
     this.clients.add(reply)

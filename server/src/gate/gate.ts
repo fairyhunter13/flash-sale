@@ -48,7 +48,10 @@ export type SaleNumbers = {
 }
 
 export class Gate {
-  constructor(private readonly redis: Redis) {
+  private readonly redis: Redis
+
+  constructor(redis: Redis) {
+    this.redis = redis
     // ioredis retries EVALSHA on NOSCRIPT by itself, so no SCRIPT LOAD is needed.
     redis.defineCommand('reserve', { numberOfKeys: 4, lua: SCRIPT })
   }

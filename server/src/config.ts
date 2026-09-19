@@ -24,8 +24,15 @@ type Env = Record<string, string | undefined>
 // at a time costs the reader one restart for each one.
 class Reader {
   readonly problems: string[] = []
+  private readonly env: Env
 
-  constructor(private readonly env: Env) {}
+  // A field and an assignment, and never a constructor parameter property.
+  // `node --experimental-strip-types` deletes types and rewrites nothing, so a
+  // parameter property is a SyntaxError there. The same shape is used in every
+  // class in this package.
+  constructor(env: Env) {
+    this.env = env
+  }
 
   private raw(name: string): string | undefined {
     const value = this.env[name]?.trim()
