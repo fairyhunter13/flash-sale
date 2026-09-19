@@ -1,0 +1,30 @@
+{
+  "name": "flash-sale",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "server",
+    "web",
+    "stress"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "concurrently -n server,recorder,web -c blue,magenta,green \"npm:dev -w server\" \"npm:recorder -w server\" \"npm:dev -w web\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "stress": "npm run stress -w stress",
+    "bench": "npm run bench -w stress",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down -v"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}

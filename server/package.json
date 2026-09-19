@@ -1,0 +1,23 @@
+{
+  "name": "@flash-sale/server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --watch --experimental-strip-types src/server.ts",
+    "recorder": "node --watch --experimental-strip-types src/recorder/main.ts",
+    "start": "node --experimental-strip-types src/server.ts"
+  },
+  "dependencies": {
+    "fastify": "^5.8.0",
+    "ioredis": "^5.9.0",
+    "pg": "^8.16.0"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.0.0",
+    "@testcontainers/redis": "^12.0.0",
+    "@types/pg": "^8.15.0",
+    "testcontainers": "^12.0.0"
+  }
+}

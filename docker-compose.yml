@@ -1,0 +1,31 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      # The default is the port the image normally uses. Set REDIS_PORT in .env
+      # where another Redis already holds 6379 on your box.
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flash
+      POSTGRES_PASSWORD: flash
+      POSTGRES_DB: flash
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # This directory runs only when the data directory is empty, so a schema
+      # change needs `npm run db:down` before `npm run db:up`.
+      - ./server/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flash -d flash"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
