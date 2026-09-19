@@ -9,3 +9,12 @@ coverage/
 # The brief and the private review notes. They name the company, so they never
 # leave this box. The repository becomes public.
 private/
+
+# The working notes for this task, and not part of the deliverable. They are
+# kept on disk, because they hold the reasoning. They are not committed,
+# because a reviewer reads the code and the README, and a plan document that
+# describes an older design only misleads them.
+CLAUDE.md
+concepts/
+docs/
+scripts/
