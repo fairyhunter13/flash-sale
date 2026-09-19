@@ -11,6 +11,7 @@ export default defineConfig({
           root: './server',
           environment: 'node',
           include: ['test/**/*.spec.ts'],
+          globalSetup: ['./test/setup/containers.ts'],
           // A container start plus a real race needs more than the 5 s default.
           testTimeout: 60_000,
           hookTimeout: 120_000,
