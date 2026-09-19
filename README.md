@@ -195,6 +195,7 @@ process, which is a memory limit and not a CPU one.
 server/   Fastify, the Lua gate, the recorder, 40 tests
 web/      React 19 on Vite, 7 tests
 stress/   the correctness run, and the throughput bench
+scripts/  clean-clone-check.sh, which proves a fresh clone runs
 docs/     the development plan, the test plan, the decisions
 concepts/ the design, authored before the code
 ```
