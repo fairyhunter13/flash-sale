@@ -66,6 +66,11 @@ count, because autocannon reads its `amount` as a per-connection quota.
 
 ## How it works
 
+![The system today: a React page, one Fastify process holding the gate and the pool, and Postgres 16](architecture.svg)
+
+<details>
+<summary>The same diagram as Mermaid source, with the call on each arrow</summary>
+
 ```mermaid
 flowchart LR
     B["Buyer<br/>React page"]
@@ -81,6 +86,13 @@ flowchart LR
     G -- "BEGIN / 3 statements / COMMIT" --> P
     F -- "SELECT" --> P
 ```
+
+</details>
+
+`architecture.svg` is rendered from `architecture.mmd` by `mermaid-cli` with the Iconify `logos` and
+`mdi` packs. The picture is committed, because GitHub renders a Mermaid `architecture-beta` block but
+does not register those icon packs, so the icons arrive as broken placeholders. The source sits
+beside it, so the diagram stays a text file that a reviewer can diff and change.
 
 **One store decides and remembers.** The winner is chosen by one Postgres transaction, and the same
 transaction writes the order. So there is no window where a buyer holds a unit that no table records.
@@ -240,6 +252,54 @@ serves them all. The static files belong on a CDN, and the SSE stream stays on t
 2. The connection pool queue, once arrivals exceed what 20 connections retire.
 3. The single stock row, but only at a unit count far above 1,000.
 
+### The shape at a million buyers
+
+Every change above, drawn as one picture. Nothing in it is built here, and each box is named in the
+list above with the measurement that would call for it.
+
+![The target: CDN and a waiting room at the edge, N Fastify processes with a shared Redis shed cache, and PgBouncer in front of a Postgres primary with a read replica and a queue](architecture-scale.svg)
+
+## Redis in front of Postgres, and what it costs
+
+The usual answer to this problem is Redis for the decision and Postgres for the record. That version
+was built first, and it was then removed. The numbers below come from running both versions on this
+box, with the same stress harness and the same 10,000 buyers.
+
+| Design | Time for 10,000 buyers | Requests a second | Postgres backends at the peak | Correctness |
+| --- | --- | --- | --- | --- |
+| Redis gate, Postgres record through a stream | 1.02 s | 9,759 | 2 | exact: 1,000 won, 9,000 refused |
+| One Postgres transaction (this repository) | 1.6 s to 2.0 s | 5,100 to 6,100 | 20 | exact: 1,000 won, 9,000 refused |
+
+**Redis is about 1.6 times faster here, and both are correct.** So the choice is not correctness. It
+is what the extra speed costs, and what breaks.
+
+**What the Redis version moves, and what it adds.**
+
+1. **The bottleneck moves from a row lock to one CPU core.** Redis runs commands on a single thread,
+   so the whole gate is one core and a Lua script blocks every other client while it runs. That
+   ceiling is high, and it is a ceiling. Postgres spreads the same work over cores and serializes
+   only on the one row.
+2. **Two stores hold one truth.** A win exists in Redis before the order row exists in Postgres. So
+   a buyer can be told they won while `GET /api/purchase/:userId` still reads nothing, unless that
+   route also reads Redis.
+3. **A replay path becomes necessary.** The removed version used a Redis stream, a consumer group
+   and `XAUTOCLAIM` with a 30 s idle time, so a recorder that died mid-batch replayed it. That is
+   about 200 lines and 5 tests that exist only to repair a gap the single transaction never opens.
+4. **Durability drops to the AOF setting.** With `appendfsync everysec`, a power cut can lose up to
+   1 second of acknowledged wins. `always` removes the loss and most of the speed advantage.
+5. **The failure gets worse, not better.** Postgres down today means no sale and no wrong answers.
+   Redis down means the same, and it means the two stores must be reconciled afterwards.
+
+**Where Redis is the right answer.** When the sustained purchase rate passes what one Postgres
+primary can serialize on one row. On this shared box that was about 6,000 a second, and a dedicated
+primary does several times more. A second reason is a shared shed cache: with `N` API processes the
+250 ms snapshot is held `N` times, and one Redis key would hold it once. Neither reason applies at
+the load this brief describes, and both are drawn in the picture above.
+
+**The pragmatic reading.** 1.6 times the speed, in exchange for a second store, a second language, a
+replay path and a window where two stores disagree. At 1,000 units the sale ends in under 2 seconds
+either way, so the speed buys nothing a buyer can feel.
+
 ## Trade-offs
 
 **One store, and not a cache in front of a database.** Redis plus Postgres is the usual answer, and
@@ -284,3 +344,31 @@ server/   Fastify, the Postgres gate, the schema, 34 tests
 web/      React 19 on Vite, 7 tests
 stress/   the correctness run, and the throughput bench
 ```
+
+| File at the root | What it is |
+| --- | --- |
+| `architecture.mmd`, `architecture.svg` | the system today, as source and as the rendered picture |
+| `architecture-scale.mmd`, `architecture-scale.svg` | the target shape at a much larger load |
+| `docker-compose.yml` | Postgres 16, and nothing else |
+| `.env.example` | every number the server reads, with no constant hidden in the source |
+
+## Where each requirement is answered
+
+| Asked for | Answered by |
+| --- | --- |
+| A configurable start and end time, and purchases only inside it | `SALE_START` and `SALE_END`, checked as the first statement of the gate. `server/test/gate.spec.ts` |
+| One product with a fixed quantity | one row in `stock`, with `CHECK (units_left >= 0)` and a single-row constraint |
+| One unit per user | `UNIQUE (user_id)` on `orders`, inside the same transaction. `server/test/schema.spec.ts` |
+| An endpoint for the sale state | `GET /api/sale`, and `GET /api/sale/stream` for the live form |
+| An endpoint to attempt a purchase | `POST /api/purchase` |
+| An endpoint for what a buyer holds | `GET /api/purchase/:userId` |
+| A simple frontend with a state line, an identifier field, a Buy Now button and feedback | `web/`, React 19. It names all 5 outcomes and it updates with no reload |
+| A clear system diagram | `architecture.svg` at the top of How it works, with its source beside it |
+| High throughput, and a design that scales | the Measured and Scaling sections, each number naming its command |
+| Robustness and fault tolerance | a dead database answers 503 and never a wrong outcome. A rolled-back transaction writes no order. A restart gives back no unit |
+| Concurrency control, with no overselling | the row lock in the `UPDATE`, proved by 1,000 parallel callers and by the 10,000-buyer run |
+| Unit and integration tests | 41 tests over 9 files, against real Postgres through testcontainers |
+| Stress tests, and an explanation of the results | `npm run stress` for the counts, `npm run bench` for the speed, and the Measured section for the reading |
+| TypeScript, Node with Fastify, React | all three, type checked by `npm run build` |
+| Cloud services in mind, and mocking allowed with an explanation | the Redis comparison above, and the target picture. Nothing is mocked |
+| A README with the design, the trade-offs, the diagram, the run steps and the stress steps | this file |

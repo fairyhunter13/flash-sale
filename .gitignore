@@ -18,3 +18,9 @@ CLAUDE.md
 concepts/
 docs/
 scripts/
+
+# The browser tests and the diagram renderer. Neither is asked for, and both
+# pull a large toolchain that a reviewer does not need to install to read the
+# code. The diagram they produce IS committed, at architecture.svg.
+e2e/
+diagram-build/

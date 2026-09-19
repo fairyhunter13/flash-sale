@@ -1,0 +1,16 @@
+architecture-beta
+    group browser(mdi:monitor)[Buyer]
+    service page(logos:react)[React 19 page] in browser
+
+    group api(logos:nodejs-icon)[API process]
+    service http(mdi:api)[Fastify 5 routes and SSE] in api
+    service gate(mdi:lightning-bolt)[Gate 250 ms snapshot] in api
+    service pool(mdi:transit-connection-variant)[pg Pool max 20] in api
+
+    group data(mdi:database)[Datastore]
+    service pg(logos:postgresql)[Postgres 16 stock and orders] in data
+
+    page:R --> L:http
+    http:R --> L:gate
+    gate:R --> L:pool
+    pool:R --> L:pg

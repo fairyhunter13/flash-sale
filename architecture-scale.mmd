@@ -1,0 +1,25 @@
+architecture-beta
+    group edge(mdi:cloud)[Edge]
+    service cdn(mdi:web)[CDN static page] in edge
+    service lb(mdi:scale-balance)[Load balancer and waiting room] in edge
+
+    group tier(logos:kubernetes)[API tier N processes]
+    service api1(logos:nodejs-icon)[Fastify one of N] in tier
+    service api2(logos:nodejs-icon)[Fastify one of N] in tier
+    service shed(logos:redis)[Redis shared shed cache] in tier
+
+    group data(mdi:database)[Data tier]
+    service pgb(mdi:swap-horizontal)[PgBouncer transaction mode] in data
+    service pg(logos:postgresql)[Postgres primary the decider] in data
+    service replica(logos:postgresql)[Read replica status reads] in data
+    service queue(mdi:tray-full)[Queue receipts and email] in data
+
+    cdn:R --> L:lb
+    lb:B --> T:api1
+    lb:R --> L:api2
+    api1:R --> L:shed
+    api2:B --> T:shed
+    api1:B --> T:pgb
+    pgb:R --> L:pg
+    pg:R --> L:replica
+    pg:B --> T:queue
