@@ -1,10 +1,11 @@
-import { Pool } from 'pg'
+import type { Pool } from 'pg'
+import { poolFor } from './setup/db.ts'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 
 let pool: Pool
 
-beforeAll(() => {
-  pool = new Pool({ connectionString: inject('databaseUrl'), max: 2 })
+beforeAll(async () => {
+  pool = await poolFor(inject('databaseUrl'), 't_schema')
 })
 
 afterAll(async () => {

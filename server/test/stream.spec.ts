@@ -1,4 +1,6 @@
 import { Redis } from 'ioredis'
+import type { Pool } from 'pg'
+import { poolFor } from './setup/db.ts'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
 import type { Config } from '../src/config.ts'
 import { buildApp, type App } from '../src/server.ts'
@@ -41,21 +43,23 @@ async function* saleEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<Sal
 type SaleEvent = { state: string; stockLeft: number }
 
 let redis: Redis
+let pool: Pool
 let app: App
 let base: string
 
-beforeAll(() => {
+beforeAll(async () => {
   redis = new Redis(inject('redisUrl'), { db: 3 })
+  pool = await poolFor(inject('databaseUrl'), 't_stream')
 })
 
 afterAll(async () => {
-  await redis.quit()
+  await Promise.all([redis.quit(), pool.end()])
 })
 
 beforeEach(async () => {
   await redis.flushdb()
   // A 20 ms tick keeps the test short. The server runs at the 250 ms default.
-  app = await buildApp(config(inject('redisUrl')), redis, 20)
+  app = await buildApp(config(inject('redisUrl')), redis, pool, 20)
   base = await app.fastify.listen({ port: 0, host: '127.0.0.1' })
 })
 

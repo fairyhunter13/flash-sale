@@ -1,5 +1,6 @@
 import { Redis } from 'ioredis'
-import { Pool } from 'pg'
+import type { Pool } from 'pg'
+import { poolFor } from './setup/db.ts'
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
 import { Gate, KEY } from '../src/gate/gate.ts'
 import { GROUP, Recorder } from '../src/recorder/consumer.ts'
@@ -13,9 +14,9 @@ let redis: Redis
 let pool: Pool
 let gate: Gate
 
-beforeAll(() => {
+beforeAll(async () => {
   redis = new Redis(inject('redisUrl'), { db: 4 })
-  pool = new Pool({ connectionString: inject('databaseUrl'), max: 4 })
+  pool = await poolFor(inject('databaseUrl'), 't_recorder')
 })
 
 afterAll(async () => {

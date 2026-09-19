@@ -1,8 +1,10 @@
 import { fileURLToPath } from 'node:url'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { Redis } from 'ioredis'
+import { Pool } from 'pg'
 import { readConfig, type Config } from './config.ts'
 import { Gate } from './gate/gate.ts'
+import { registerOrderRoute } from './orders.ts'
 import { registerRoutes } from './routes/index.ts'
 import { SaleTicker, registerStream } from './routes/stream.ts'
 
@@ -16,7 +18,12 @@ export type App = {
  * Builds the server without listening, so a test drives it through
  * `fastify.inject` and needs no port.
  */
-export async function buildApp(config: Config, redis: Redis, tickMs?: number): Promise<App> {
+export async function buildApp(
+  config: Config,
+  redis: Redis,
+  pool: Pool,
+  tickMs?: number,
+): Promise<App> {
   const gate = new Gate(redis)
   await gate.seed({ stock: config.stock, startMs: config.startMs, endMs: config.endMs })
 
@@ -25,6 +32,7 @@ export async function buildApp(config: Config, redis: Redis, tickMs?: number): P
   const fastify = Fastify({ logger: false, forceCloseConnections: true })
   const ticker = tickMs === undefined ? new SaleTicker(gate) : new SaleTicker(gate, tickMs)
   registerRoutes(fastify, gate)
+  registerOrderRoute(fastify, pool)
   registerStream(fastify, ticker)
   fastify.addHook('onClose', async () => ticker.closeAll())
 
@@ -34,7 +42,8 @@ export async function buildApp(config: Config, redis: Redis, tickMs?: number): P
 async function main(): Promise<void> {
   const config = readConfig()
   const redis = new Redis(config.redisUrl)
-  const app = await buildApp(config, redis)
+  const pool = new Pool({ connectionString: config.databaseUrl })
+  const app = await buildApp(config, redis, pool)
   await app.fastify.listen({ port: config.port, host: config.host })
 }
 

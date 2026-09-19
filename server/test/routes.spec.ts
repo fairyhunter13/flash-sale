@@ -1,5 +1,7 @@
 import Fastify from 'fastify'
 import { Redis } from 'ioredis'
+import type { Pool } from 'pg'
+import { poolFor } from './setup/db.ts'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
 import type { Config } from '../src/config.ts'
 import { Gate } from '../src/gate/gate.ts'
@@ -22,19 +24,21 @@ function config(stock: number, redisUrl: string): Config {
 }
 
 let redis: Redis
+let pool: Pool
 let app: App
 
-beforeAll(() => {
+beforeAll(async () => {
   redis = new Redis(inject('redisUrl'), { db: 2 })
+  pool = await poolFor(inject('databaseUrl'), 't_routes')
 })
 
 afterAll(async () => {
-  await redis.quit()
+  await Promise.all([redis.quit(), pool.end()])
 })
 
 beforeEach(async () => {
   await redis.flushdb()
-  app = await buildApp(config(1000, inject('redisUrl')), redis)
+  app = await buildApp(config(1000, inject('redisUrl')), redis, pool)
 })
 
 afterEach(async () => {
