@@ -25,7 +25,7 @@ and no CORS.
 start. Change `SALE_START` and `SALE_END` to see the other states. Where Redis or Postgres already
 runs on your box, change `REDIS_PORT` and `POSTGRES_PORT`, and change the two URLs beside them.
 
-**Tests.** `npm test` runs all 45. Redis and Postgres are real, started by testcontainers, so Docker
+**Tests.** `npm test` runs all 47. Redis and Postgres are real, started by testcontainers, so Docker
 must be running. Nothing is mocked.
 
 **While you develop.** `npm run dev` runs the server, the recorder and Vite together. Vite serves
@@ -129,7 +129,7 @@ in Docker. Every number below names the command that produced it.
 | `GET /api/sale` throughput | 26,461 a second, p50 18 ms, p99 26 ms | `npm run bench` |
 | `POST /api/purchase` throughput | 28,853 a second, p50 16 ms, p99 26 ms | `npm run bench` |
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
-| Tests | 45, over real Redis and real Postgres | `npm test` |
+| Tests | 47, over real Redis and real Postgres | `npm test` |
 
 **What the stress number means.** 9,068 a second is the rate at which this one Node process decided
 10,000 outcomes correctly. It is lower than the bench figure because the stress run creates 10,000
@@ -192,7 +192,7 @@ process, which is a memory limit and not a CPU one.
 ## Layout
 
 ```
-server/   Fastify, the Lua gate, the recorder, 38 tests
+server/   Fastify, the Lua gate, the recorder, 40 tests
 web/      React 19 on Vite, 7 tests
 stress/   the correctness run, and the throughput bench
 docs/     the development plan, the test plan, the decisions
@@ -200,4 +200,5 @@ concepts/ the design, authored before the code
 ```
 
 `docs/development-plan.md` and `docs/test-plan.md` are the two documents the work was done against.
-Every test row names the test that proves it.
+Every test row names the test that proves it. `docs/decisions.md` holds one question and one answer
+for each decision above.
