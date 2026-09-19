@@ -1,5 +1,7 @@
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import Fastify, { type FastifyInstance } from 'fastify'
+import fastifyStatic from '@fastify/static'
 import { Redis } from 'ioredis'
 import { Pool } from 'pg'
 import { readConfig, type Config } from './config.ts'
@@ -39,11 +41,27 @@ export async function buildApp(
   return { fastify, gate, ticker }
 }
 
+const WEB_DIST = fileURLToPath(new URL('../../web/dist/', import.meta.url))
+
+/**
+ * Serves the built page from the same origin as the API, so a reviewer runs
+ * `npm run build` then `npm start` and opens one URL. In development Vite
+ * serves the page instead and proxies /api here, so this does nothing.
+ */
+async function serveWeb(fastify: FastifyInstance): Promise<void> {
+  if (!existsSync(WEB_DIST)) {
+    console.warn(`${WEB_DIST} is absent, so no page is served. Run npm run build first.`)
+    return
+  }
+  await fastify.register(fastifyStatic, { root: WEB_DIST })
+}
+
 async function main(): Promise<void> {
   const config = readConfig()
   const redis = new Redis(config.redisUrl)
   const pool = new Pool({ connectionString: config.databaseUrl })
   const app = await buildApp(config, redis, pool)
+  await serveWeb(app.fastify)
   await app.fastify.listen({ port: config.port, host: config.host })
 }
 

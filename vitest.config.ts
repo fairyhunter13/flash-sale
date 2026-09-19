@@ -24,6 +24,7 @@ export default defineConfig({
           root: './web',
           environment: 'happy-dom',
           include: ['test/**/*.spec.tsx'],
+          setupFiles: ['./test/setup.ts'],
         },
       },
     ],
