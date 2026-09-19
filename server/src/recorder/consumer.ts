@@ -26,6 +26,8 @@ type Entry = { readonly id: string; readonly buyerId: string }
  * repeated win is not.
  */
 export class Recorder {
+  private readonly redis: Redis
+  private readonly pool: Pool
   private readonly consumerName: string
   private readonly blockMs: number
   private readonly claimAfterMs: number
@@ -33,11 +35,9 @@ export class Recorder {
   private running = false
   private loop: Promise<void> | undefined
 
-  constructor(
-    private readonly redis: Redis,
-    private readonly pool: Pool,
-    options: RecorderOptions = {},
-  ) {
+  constructor(redis: Redis, pool: Pool, options: RecorderOptions = {}) {
+    this.redis = redis
+    this.pool = pool
     this.consumerName = options.consumerName ?? `recorder-${process.pid}`
     this.blockMs = options.blockMs ?? 1000
     this.claimAfterMs = options.claimAfterMs ?? 30_000
@@ -56,8 +56,23 @@ export class Recorder {
   /**
    * Takes over entries another reader left unacknowledged, then reads new ones.
    * Returns how many rows the orders table gained.
+   *
+   * A NOGROUP reply means the group is gone while the stream lives on. Redis
+   * answers that after a restart with no saved data, after a replica is
+   * promoted, and after an operator deletes the key. The group is rebuilt at
+   * id 0, so the retry reads every entry already in the stream.
    */
   async drainOnce(): Promise<number> {
+    try {
+      return await this.drain()
+    } catch (error) {
+      if (!String(error).includes('NOGROUP')) throw error
+      await this.ensureGroup()
+      return await this.drain()
+    }
+  }
+
+  private async drain(): Promise<number> {
     const claimed = await this.claimStale()
     const fresh = await this.readNew()
     const entries = [...claimed, ...fresh]

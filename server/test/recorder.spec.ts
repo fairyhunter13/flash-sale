@@ -94,6 +94,20 @@ describe('the recorder', () => {
     expect(await countOrders()).toBe(1)
   })
 
+  it('a lost consumer group is rebuilt, and no win is stranded', async () => {
+    const it1 = recorder('one')
+    await it1.ensureGroup()
+    for (let n = 0; n < 5; n += 1) await gate.reserve(`buyer-${n}`, DURING)
+
+    // The group is gone and the stream is not. Redis answers NOGROUP, and the
+    // 5 entries stay in the stream.
+    await redis.xgroup('DESTROY', KEY.wins, GROUP)
+    expect(await redis.xlen(KEY.wins)).toBe(5)
+
+    expect(await it1.drainOnce()).toBe(5)
+    expect(await countOrders()).toBe(5)
+  })
+
   it('the running loop drains a win that arrives later', async () => {
     const it1 = recorder('one')
     await it1.ensureGroup()
