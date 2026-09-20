@@ -1,7 +1,9 @@
+/**
+ * The addresses and the sizes, and never the sale itself. The unit count and
+ * the window are rows, written by `server/sql/migrations/0002_campaign.sql`,
+ * so one fact lives in one place.
+ */
 export type Config = {
-  readonly stock: number
-  readonly startMs: number
-  readonly endMs: number
   readonly databaseUrl: string
   /** The most Postgres connections this process ever opens. */
   readonly dbPoolMax: number
@@ -59,20 +61,6 @@ class Reader {
     return parsed
   }
 
-  instant(name: string, example: string): number {
-    const value = this.raw(name)
-    if (value === undefined) {
-      this.problems.push(`${name} is not set. It must be a date and a time, for example ${example}.`)
-      return Number.NaN
-    }
-    const parsed = Date.parse(value)
-    if (Number.isNaN(parsed)) {
-      this.problems.push(`${name} is ${value}. It must be a date and a time, for example ${example}.`)
-      return Number.NaN
-    }
-    return parsed
-  }
-
   url(name: string, scheme: string, example: string): string {
     const value = this.raw(name)
     if (value === undefined) {
@@ -116,9 +104,6 @@ class Reader {
 export function readConfig(env: Env = process.env): Config {
   const read = new Reader(env)
 
-  const stock = read.wholeNumber('SALE_STOCK', '1000')
-  const startMs = read.instant('SALE_START', '2026-01-01T00:00:00Z')
-  const endMs = read.instant('SALE_END', '2036-01-01T00:00:00Z')
   const databaseUrl = read.url('DATABASE_URL', 'postgres', 'postgres://flash:flash@localhost:5432/flash')
   const dbPoolMax = read.wholeNumber('DB_POOL_MAX', '20')
   const redisUrl = read.url('REDIS_URL', 'redis', 'redis://localhost:6379')
@@ -127,18 +112,9 @@ export function readConfig(env: Env = process.env): Config {
   const port = read.wholeNumber('PORT', '3000')
   const host = read.text('HOST', '0.0.0.0')
 
-  if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && startMs >= endMs) {
-    read.problems.push(
-      `SALE_END is ${env['SALE_END']}. It must be after SALE_START, which is ${env['SALE_START']}.`,
-    )
-  }
-
   if (read.problems.length > 0) throw new ConfigError(read.problems)
 
   return Object.freeze({
-    stock,
-    startMs,
-    endMs,
     databaseUrl,
     dbPoolMax,
     redisUrl,

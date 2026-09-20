@@ -1,5 +1,5 @@
 import type { Pool } from 'pg'
-import { poolFor } from './setup/db.ts'
+import { poolFor, writeCampaign } from './setup/db.ts'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
 import type { Config } from '../src/config.ts'
 import { buildApp, type App } from '../src/server.ts'
@@ -9,9 +9,6 @@ const END = Date.parse('2036-06-01T00:00:00Z')
 
 function config(): Config {
   return Object.freeze({
-    stock: 5,
-    startMs: START,
-    endMs: END,
     databaseUrl: 'postgres://unused/unused',
     dbPoolMax: 4,
     redisUrl: inject('redisUrl'),
@@ -60,8 +57,8 @@ let run = 0
 
 beforeEach(async () => {
   await pool.query('DELETE FROM orders')
-  await pool.query('DELETE FROM stock')
   await pool.query('DELETE FROM queue_offsets')
+  await writeCampaign(pool, { stock: 5, startMs: START, endMs: END })
   // A 20 ms tick keeps the test short. The server runs at the 250 ms default.
   run += 1
   app = await buildApp(config(), pool, 20, `t_stream_${run}`)

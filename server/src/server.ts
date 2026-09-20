@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from 'fastify'
 import fastifyStatic from '@fastify/static'
 import { Pool } from 'pg'
 import { readConfig, type Config } from './config.ts'
+import { migrate } from './db/migrate.ts'
 import { Gate } from './gate/gate.ts'
 import { registerOrderRoute } from './orders.ts'
 import { Pipeline } from './queue/pipeline.ts'
@@ -29,12 +30,11 @@ export async function buildApp(
   // here, and two test files then never share a Redis key or a topic.
   namespace = '',
 ): Promise<App> {
-  const sale = { stock: config.stock, startMs: config.startMs, endMs: config.endMs }
   const gate = new Gate(pool)
-  await gate.seed(sale)
+  const sale = await gate.campaign()
 
-  // The pipeline starts after the seed, because it rebuilds the hot state from
-  // the order rows when Redis holds no sale.
+  // The pipeline starts after the campaign is read, because it rebuilds the hot
+  // state from the order rows when Redis holds no sale.
   const pipeline = await Pipeline.start({
     redisUrl: config.redisUrl,
     kafkaBrokers: config.kafkaBrokers,
@@ -77,6 +77,12 @@ async function serveWeb(fastify: FastifyInstance): Promise<void> {
 
 async function main(): Promise<void> {
   const config = readConfig()
+  // The schema and the campaign row arrive together, so a fresh clone needs no
+  // hand-written SQL.
+  const migrations = new Pool({ connectionString: config.databaseUrl, max: 1 })
+  const applied = await migrate(migrations).finally(() => migrations.end())
+  if (applied.length > 0) console.log(`applied ${applied.join(', ')}`)
+
   // The cap is the whole answer to "what if a million people arrive". Postgres
   // never sees more than DB_POOL_MAX connections from this process, whatever
   // the number of open sockets in front of it.

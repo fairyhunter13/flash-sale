@@ -17,11 +17,8 @@ const SOLD_KEY = 'sale:sold'
 const BUYERS_KEY = 'sale:buyers'
 /** How long the run waits for the workers to write the last win into Postgres. */
 const DRAIN_MS = Number(process.env['STRESS_DRAIN_MS'] ?? 60_000)
-const STOCK = Number(process.env['SALE_STOCK'] ?? 1000)
 const BUYERS = Number(process.env['STRESS_BUYERS'] ?? 10_000)
 const CONNECTIONS = Number(process.env['STRESS_CONNECTIONS'] ?? 500)
-const START_MS = Date.parse(process.env['SALE_START'] ?? '2026-01-01T00:00:00Z')
-const END_MS = Date.parse(process.env['SALE_END'] ?? '2036-01-01T00:00:00Z')
 /** The server reuses one read of the sale for this long, so a reset waits it out. */
 const CACHE_MS = 250
 
@@ -45,7 +42,10 @@ function assertLocal(name: string, url: string): void {
 type Tally = Record<string, number>
 
 /**
- * Empties the sale in both stores.
+ * Puts every unit back, in both stores, and reports the campaign it restored.
+ *
+ * The count returns to `total_units`, which the migration wrote, so this file
+ * holds no number of its own.
  *
  * Redis holds the live count, so a reset that touches Postgres alone leaves the
  * sale sold out and the next run wins nothing.
@@ -54,17 +54,17 @@ type Tally = Record<string, number>
  * worker that lost it would seek back to offset 0 and write the records of the
  * previous run into the fresh sale.
  */
-async function reset(pool: Pool, redis: RedisLike): Promise<void> {
+async function reset(pool: Pool, redis: RedisLike): Promise<number> {
   await pool.query('TRUNCATE orders')
-  await pool.query('DELETE FROM stock')
-  await pool.query('INSERT INTO stock (id, units_left, start_at, end_at) VALUES (1, $1, $2, $3)', [
-    STOCK,
-    new Date(START_MS),
-    new Date(END_MS),
-  ])
+  const { rows } = await pool.query<{ total_units: number }>(
+    'UPDATE stock SET units_left = total_units WHERE id = 1 RETURNING total_units',
+  )
+  const stock = rows[0]?.total_units
+  if (stock === undefined) throw new Error('the campaign row is missing. Run npm run db:migrate.')
   await redis.del([SOLD_KEY, BUYERS_KEY])
   // The running server still holds the old count for one cache window.
   await new Promise((done) => setTimeout(done, CACHE_MS * 2))
+  return stock
 }
 
 type RedisLike = { del: (keys: string[]) => Promise<number>; quit: () => Promise<unknown> }
@@ -196,23 +196,23 @@ async function main(): Promise<void> {
   const redis = createClient({ url: REDIS_URL })
   await redis.connect()
   try {
-    await reset(pool, redis as unknown as RedisLike)
-    console.log(`reset: units_left=${STOCK}, orders=0 rows, ${SOLD_KEY} and ${BUYERS_KEY} dropped`)
+    const stock = await reset(pool, redis as unknown as RedisLike)
+    console.log(`reset: units_left=${stock}, orders=0 rows, ${SOLD_KEY} and ${BUYERS_KEY} dropped`)
     console.log(`driving ${BUYERS} buyers, ${CONNECTIONS} connections`)
 
     const watcher = watchBackends(pool)
     const { tally, seconds } = await drive()
     const peak = watcher.stop()
 
-    const drained = await drain(pool, STOCK)
+    const drained = await drain(pool, stock)
     console.log(`queue drained in ${drained.ms} ms`)
 
     const checks: Check[] = [
-      { name: 'won', got: tally['won'] ?? 0, want: STOCK },
-      { name: 'sold-out', got: tally['sold-out'] ?? 0, want: BUYERS - STOCK },
+      { name: 'won', got: tally['won'] ?? 0, want: stock },
+      { name: 'sold-out', got: tally['sold-out'] ?? 0, want: BUYERS - stock },
       { name: 'other', got: BUYERS - (tally['won'] ?? 0) - (tally['sold-out'] ?? 0), want: 0 },
       { name: 'units left', got: await unitsLeft(pool), want: 0 },
-      { name: 'pg orders', got: drained.rows, want: STOCK },
+      { name: 'pg orders', got: drained.rows, want: stock },
     ]
 
     const passed = report(checks, tally, seconds, peak)

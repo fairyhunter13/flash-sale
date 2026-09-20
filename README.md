@@ -11,27 +11,33 @@ Postgres 16 for the permanent record, React 19 for the page.
 You need Node 24 or newer and Docker.
 
 ```sh
-cp .env.example .env     # the port, the stock and the sale window
+cp .env.example .env     # ports and addresses only
 npm install
 npm run db:up            # Postgres, Redis and Kafka in Docker
 npm run build            # type checks 3 workspaces, and builds the page
-npm start                # the server on :3000
+npm start                # migrates the database, then serves on :3000
 ```
 
 Open `http://127.0.0.1:3000`. The page is served by the same server as the API, so there is one URL
 and no CORS.
 
-`.env.example` opens the sale in 2026 and closes it in 2036, so the sale is open the moment you
-start. Change `SALE_START` and `SALE_END` to see the other states. Where Postgres, Redis or Kafka already runs on
-your box, change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT`, and the URL beside it.
+**The sale is a row, and never a variable.** `server/sql/migrations/0002_campaign.sql` writes 1,000
+units, a start in 2026 and an end in 2036, so the sale is open the moment you start. Edit that file
+to see the other states, then run `npm run db:migrate`. `npm start` runs the migrations too, so a
+fresh clone needs no extra step.
 
-**Tests.** `npm test` runs all 62. Postgres, Redis and Kafka are all real, started by
+`.env` holds addresses and sizes only. Where Postgres, Redis or Kafka already runs on your box,
+change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT`, and the URL beside it.
+
+**Tests.** `npm test` runs all 66. Postgres, Redis and Kafka are all real, started by
 testcontainers, so Docker must be running. Nothing is mocked.
 
 **While you develop.** `npm run dev` runs the server and Vite together. Vite serves the page on
 `http://127.0.0.1:5173` and sends `/api` to the server.
 
-**Stop.** `npm run db:down` removes the container and its data.
+**Stop.** `npm run db:down` removes the container and its data. Stop the server first. A server that
+outlives its broker keeps a producer sequence the new broker never issued, and every send then fails
+with `out of order sequence number` until you restart it.
 
 ## Run the stress test
 
@@ -167,7 +173,7 @@ so 1,000 pages cost 1 read and not 1,000.
 
 **The state read costs no database round trip either.** `GET /api/sale` takes the units left from
 Redis, and the sale window from a read of `stock` that `Gate` reuses for 250 ms. The window never
-changes after the seed, so a stale copy of it cannot be wrong.
+changes while the sale runs, so a stale copy of it cannot be wrong.
 
 ## Why no unit is oversold
 
@@ -225,9 +231,44 @@ one of them.
 | `UNIQUE (user_id)` | `orders_user_id_key` | a second unit for one buyer, and a record read twice |
 | `CHECK (units_left >= 0)` | `stock_never_negative` | a future defect, as a failed transaction |
 
-The last two guards are in `server/sql/schema.sql`, and `server/test/schema.spec.ts` proves each one
-by trying to break it. A defect in the worker then costs a rolled-back transaction, never a sold
-unit.
+The last two guards are in `server/sql/migrations/0001_tables.sql`, and
+`server/test/schema.spec.ts` proves each one by trying to break it. A defect in the worker then
+costs a rolled-back transaction, never a sold unit.
+
+## Why there is no Redis transaction
+
+`Pipeline.reserve` opens no `MULTI`, takes no `WATCH` and runs no Lua script. That is not an
+oversight. **Each decision is already one command, and one Redis command is atomic.**
+
+| The decision | The command | Why it is safe alone |
+| --- | --- | --- |
+| Who gets unit number *n* | `INCR sale:sold` | It returns a different number to every caller. A buyer wins only where that number is at most the stock, so at most `stock` buyers can win |
+| Whether a buyer already holds a unit | `SADD sale:buyers` | It returns 1 to one caller and 0 to every other. Two parallel attempts by one buyer can never both read 1 |
+
+The `GET` before them is a fast path and never the decision. A stale read refuses a buyer the sale
+can still serve, or it lets one through to `INCR`. `INCR` then refuses them. So a wrong `GET` costs a
+wasted call, never a wrong answer.
+
+**A `MULTI`/`EXEC` block would add nothing here, and it would break the code.** Redis queues the
+commands inside a block and answers them all at the end. So `reserve` could not read what `SADD`
+returned before it decides whether to call `INCR`. A block also has no rollback: a command that
+fails inside `EXEC` leaves the commands beside it applied. Each command is atomic on its own, and that is where the safety above comes from. A block does
+not make a group of commands atomic in the way the word suggests.
+
+`WATCH` and a retry loop would work, and they would replace a lock-free path with a path that
+retries under load. The measured rate above is the reason not to.
+
+**The one real gap is a crash between `INCR` and the Kafka send.** The counter moved, and no record
+left. That unit is then lost: the sale sells 999 of 1,000. **It is never oversold**, because the
+number was issued once and no second buyer can hold it. So the failure is a sale that ends one unit
+short, and the design fails in the safe direction. An outbox row and a reconciler would close it,
+and neither a Redis transaction nor a Lua script would.
+
+Three tests in `server/test/pipeline.spec.ts` prove the two decisions under real parallel load:
+
+- 400 buyers against 5 units leave exactly 5 members in the set, and 0 units left.
+- 200 buyers against 50 units over 4 workers read exactly 50 wins, with the places 1 to 50.
+- One buyer who calls `reserve` 50 times at once reads 1 `won` and 49 `already-bought`.
 
 ## What happens when something breaks
 
@@ -428,18 +469,18 @@ arrival spike lands in a log instead of a connection pool, and a slow database c
 rather than answers. What it gives up: two more containers, and a window where Redis holds a win
 that Postgres does not. Both costs are measured in the section above.
 
-**Four Redis commands, and not a Lua script.** A Lua script in Redis is atomic and fast, and it is
-also a second language that no type checker reads. `SADD` before `INCR` leaves one gap, where a
-buyer is in the set before their place is known, and `SREM` closes it in the same function. The
-whole decision stays in TypeScript, and `server/test/pipeline.spec.ts` drives 400 buyers at 5 units
-to prove the set holds 5.
+**Four Redis commands, and no Lua script and no transaction.** A Lua script is atomic and fast, and
+it is also a second language that no type checker reads. `SADD` before `INCR` leaves one gap, where
+a buyer is in the set before their place is known, and `SREM` closes it in the same function. The
+whole decision stays in TypeScript. [Why there is no Redis transaction](#why-there-is-no-redis-transaction)
+gives the argument, and `server/test/pipeline.spec.ts` gives the proof.
 
 **Postgres, and not SQLite.** For 1,000 rows written by one process, SQLite is enough and it needs no
 container. Postgres is here because it is the store a real sale uses, so the design does not change
 when the sale grows. That is the trade: one container in exchange for a design that survives the
 next change.
 
-**Nothing is mocked.** A fake store would have been cheaper. The database is real Postgres, in
+**Nothing is mocked.** A fake store is cheaper to run. The database is real Postgres, in
 Docker for a run and started by testcontainers for a test. So the code does not change when it moves
 to a managed instance.
 
@@ -457,7 +498,7 @@ one does not claim.
 ## Layout
 
 ```
-server/   Fastify, the Redis pipeline, the Postgres gate, the schema, 49 tests
+server/   Fastify, the Redis pipeline, the Postgres gate, the migrations, 53 tests
 web/      React 19 on Vite, 13 tests
 stress/   the correctness run, and the throughput bench
 ```
@@ -467,14 +508,15 @@ stress/   the correctness run, and the throughput bench
 | `diagrams/architecture.mmd`, `diagrams/architecture.svg` | the system today, as source and as the rendered picture |
 | `diagrams/architecture-scale.mmd`, `diagrams/architecture-scale.svg` | the target shape at a much larger load |
 | `docker-compose.yml` | Postgres 16, Redis 7 with `appendfsync everysec`, and Kafka 4 in KRaft mode |
-| `.env.example` | every number the server reads, with no constant hidden in the source |
+| `.env.example` | every address and size the server reads, with no constant hidden in the source |
+| `server/sql/migrations/` | the tables, then the campaign row. `npm start` and `npm run db:migrate` both apply them, once each |
 | `docs/design-experiments.md` | the 9 designs that were built and measured, and why this one ships |
 
 ## What the sale does, and where
 
 | Capability | Where it lives |
 | --- | --- |
-| A configurable start and end time, and purchases only inside it | `SALE_START` and `SALE_END`, checked before any store is read. `server/test/pipeline.spec.ts` |
+| A configurable start and end time, and purchases only inside it | `start_at` and `end_at` in the `stock` row, written by `server/sql/migrations/0002_campaign.sql` and checked before any store is read. `server/test/pipeline.spec.ts` |
 | One product with a fixed quantity | one row in `stock`, with `CHECK (units_left >= 0)` and a single-row constraint |
 | One unit per user | `SADD sale:buyers` refuses the second attempt, and `UNIQUE (user_id)` on `orders` refuses it again. `server/test/schema.spec.ts` |
 | An endpoint for the sale state | `GET /api/sale`, and `GET /api/sale/stream` for the live form. A buyer thinks in 3 states: upcoming, active and ended. Those are `pending`, `open`, and `sold-out` or `closed`. The sale splits "ended" in two, because a buyer needs to know whether the units ran out or the clock did |
@@ -485,7 +527,7 @@ stress/   the correctness run, and the throughput bench
 | High throughput, and a design that scales | the Measured and Scaling sections, each number naming its command. The write is already off the request path |
 | Robustness and fault tolerance | a slow database costs drain time and no answers. A rolled-back transaction writes no order. A lost Redis is rebuilt from the order rows, and `max(seq)` gives the next place, never the row count |
 | Concurrency control, with no overselling | `INCR` in Redis, then the row lock in the `UPDATE`, proved by the 10,000-buyer run and by 20 injected faults |
-| Unit and integration tests | 62 tests over 11 files, against real Postgres, Redis and Kafka through testcontainers. `web/test/flow.spec.tsx` drives the page through the real HTTP client |
+| Unit and integration tests | 66 tests over 11 files, against real Postgres, Redis and Kafka through testcontainers. `web/test/flow.spec.tsx` drives the page through the real HTTP client |
 | Stress tests, and an explanation of the results | `npm run stress` for the counts, `npm run bench` for the speed, and the Measured section for the reading |
 | TypeScript, Node with Fastify, React | all three, type checked by `npm run build` |
 | Ready for managed services | every store is a managed product, and nothing is mocked. `docs/design-experiments.md` holds the 9 measured designs, and the Scaling section holds the target picture |

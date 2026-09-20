@@ -2,7 +2,7 @@ import type { Pool } from 'pg'
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from 'vitest'
 import { Gate } from '../src/gate/gate.ts'
 import { Pipeline } from '../src/queue/pipeline.ts'
-import { poolFor } from './setup/db.ts'
+import { poolFor, writeCampaign } from './setup/db.ts'
 
 const START = Date.parse('2026-06-01T00:00:00Z')
 const END = Date.parse('2036-06-01T00:00:00Z')
@@ -15,12 +15,11 @@ let run = 0
 /** One sale, on its own keys and its own topic. */
 async function start(stock: number, workers = 1): Promise<{ gate: Gate; pipeline: Pipeline }> {
   await pool.query('DELETE FROM orders')
-  await pool.query('DELETE FROM stock')
   await pool.query('DELETE FROM queue_offsets')
+  await writeCampaign(pool, { stock, startMs: START, endMs: END })
   run += 1
-  const sale = { stock, startMs: START, endMs: END }
   const gate = new Gate(pool, 0)
-  await gate.seed(sale)
+  const sale = await gate.campaign()
   const pipeline = await Pipeline.start({
     redisUrl: inject('redisUrl'),
     kafkaBrokers: [inject('kafkaBroker')],
@@ -96,6 +95,23 @@ describe('the pipeline', () => {
 
     expect(await pipeline.reserve('buyer-a', DURING)).toBe('already-bought')
     expect(await pipeline.left()).toBe(9)
+  })
+
+  it('one buyer who asks 50 times at once wins once, with no transaction anywhere', async () => {
+    const { gate, pipeline } = await start(10)
+
+    const answers = await Promise.all(
+      Array.from({ length: 50 }, () => pipeline.reserve('buyer-a', DURING)),
+    )
+
+    // SADD returns 1 to one caller and 0 to the other 49, so only one call
+    // ever reaches INCR. That is why no MULTI/EXEC is needed here.
+    expect(answers.filter((one) => one === 'won')).toHaveLength(1)
+    expect(answers.filter((one) => one === 'already-bought')).toHaveLength(49)
+    expect(await pipeline.left()).toBe(9)
+    expect(await pipeline.buyersHeld()).toBe(1)
+    expect(await pipeline.drained()).toBe(true)
+    expect(await gate.winners()).toHaveLength(1)
   })
 
   it('the window is answered before any store is read', async () => {

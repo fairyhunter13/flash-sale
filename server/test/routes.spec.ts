@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import { Pool } from 'pg'
-import { poolFor } from './setup/db.ts'
+import { poolFor, writeCampaign } from './setup/db.ts'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
 import type { Config } from '../src/config.ts'
 import { Gate } from '../src/gate/gate.ts'
@@ -11,11 +11,8 @@ import { buildApp, type App } from '../src/server.ts'
 const START = Date.parse('2026-06-01T00:00:00Z')
 const END = Date.parse('2036-06-01T00:00:00Z')
 
-function config(stock: number, startMs = START, endMs = END): Config {
+function config(): Config {
   return Object.freeze({
-    stock,
-    startMs,
-    endMs,
     databaseUrl: 'postgres://unused/unused',
     dbPoolMax: 4,
     redisUrl: inject('redisUrl'),
@@ -54,26 +51,22 @@ let run = 0
 
 beforeEach(async () => {
   await pool.query('DELETE FROM orders')
-  await pool.query('DELETE FROM stock')
   await pool.query('DELETE FROM queue_offsets')
+  await writeCampaign(pool, { stock: 1000, startMs: START, endMs: END })
   // Its own keys and its own topic, so each test starts on an empty sale.
   run += 1
-  app = await buildApp(config(1000), pool, undefined, `t_routes_${run}`)
+  app = await buildApp(config(), pool, undefined, `t_routes_${run}`)
 })
 
 afterEach(async () => {
   await app.fastify.close()
 })
 
-/**
- * Replaces the app the setup built, with a different sale. The stock row holds
- * the window, and `seed` never overwrites a row that is there, so the row goes
- * first.
- */
+/** Replaces the app the setup built, with a different campaign. */
 async function rebuild(stock: number, startMs: number, endMs: number, tag: string): Promise<void> {
   await app.fastify.close()
-  await pool.query('DELETE FROM stock')
-  app = await buildApp(config(stock, startMs, endMs), pool, undefined, `t_routes_${run}_${tag}`)
+  await writeCampaign(pool, { stock, startMs, endMs })
+  app = await buildApp(config(), pool, undefined, `t_routes_${run}_${tag}`)
 }
 
 describe('the routes', () => {

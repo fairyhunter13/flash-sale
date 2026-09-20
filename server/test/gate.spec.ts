@@ -1,7 +1,7 @@
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
 import { Gate, type Recorded, type Win } from '../src/gate/gate.ts'
-import { poolFor } from './setup/db.ts'
+import { poolFor, writeCampaign } from './setup/db.ts'
 
 const START = Date.parse('2026-06-01T00:00:00Z')
 const END = Date.parse('2026-06-02T00:00:00Z')
@@ -13,11 +13,10 @@ let nextOffset = 0
 
 async function openSale(stock: number, cacheMs = 0): Promise<void> {
   await pool.query('DELETE FROM orders')
-  await pool.query('DELETE FROM stock')
   await pool.query('DELETE FROM queue_offsets')
+  await writeCampaign(pool, { stock, startMs: START, endMs: END })
   nextOffset = 0
   gate = new Gate(pool, cacheMs)
-  await gate.seed({ stock, startMs: START, endMs: END })
 }
 
 /** One record off the queue, with the offsets counted for you. */
@@ -138,9 +137,10 @@ describe('the gate', () => {
     expect(await gate.stockLeft()).toBe(999)
 
     const second = new Gate(pool, 0)
-    await second.seed({ stock: 1000, startMs: START, endMs: END })
 
     expect(await second.stockLeft()).toBe(999)
+    // The total is a column, so the restart still knows the sale began at 1,000.
+    expect((await second.campaign()).stock).toBe(1000)
   })
 
   it('a write drops the cached count, so the page never reads a stale number', async () => {

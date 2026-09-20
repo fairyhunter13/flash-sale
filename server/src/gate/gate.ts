@@ -33,6 +33,8 @@ export const CACHE_MS = 250
 
 const READ_SALE = 'SELECT units_left, start_at, end_at FROM stock WHERE id = 1'
 
+const READ_CAMPAIGN = 'SELECT total_units, start_at, end_at FROM stock WHERE id = 1'
+
 // The row is created before it is locked, so every transaction takes the same
 // lock in the same order. Without the insert, a transaction that found no row
 // held no lock, took the stock row, and then waited for the offset row a
@@ -68,8 +70,9 @@ const TAKE_UNIT =
   'UPDATE stock SET units_left = units_left - 1 WHERE id = 1 AND units_left > 0 RETURNING units_left'
 
 type SaleRow = { units_left: number; start_at: Date; end_at: Date }
+type CampaignRow = { total_units: number; start_at: Date; end_at: Date }
 
-const MISSING = 'the stock row is missing. The server did not seed the sale.'
+const MISSING = 'the stock row is missing. Run npm run db:migrate.'
 
 /**
  * The permanent state, and the only writer of it.
@@ -101,20 +104,22 @@ export class Gate {
   }
 
   /**
-   * Writes the sale only when it is absent. A restart in the middle of a live
-   * sale then keeps the real count, so units already sold stay sold.
+   * The campaign the migrations wrote: the total the sale started with, and
+   * the window.
+   *
+   * The total is a column, and never `units_left`. A restart in the middle of
+   * a live sale reads a count that is already down, and Redis needs the total
+   * to know how many units it may still hand out.
    */
-  async seed(sale: SaleNumbers): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO stock (id, units_left, start_at, end_at)
-       VALUES (1, $1, $2, $3)
-       ON CONFLICT (id) DO NOTHING`,
-      [sale.stock, new Date(sale.startMs), new Date(sale.endMs)],
-    )
-    // The row that is now there, which is not always the row above. A second
-    // server, or a restart, reads the sale that is already running.
-    this.forget()
-    await this.snapshot()
+  async campaign(): Promise<SaleNumbers> {
+    const { rows } = await this.pool.query<CampaignRow>(READ_CAMPAIGN)
+    const row = rows[0]
+    if (row === undefined) throw new Error(MISSING)
+    return Object.freeze({
+      stock: row.total_units,
+      startMs: row.start_at.getTime(),
+      endMs: row.end_at.getTime(),
+    })
   }
 
   /**
@@ -205,7 +210,7 @@ export class Gate {
   }
 
   /**
-   * How far the workers have read one partition, and 0 where none was read.
+   * How far the workers read one partition, and 0 where none read it.
    * A new owner of the partition seeks here, because this row and the order
    * row were written by the same transaction.
    */

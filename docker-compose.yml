@@ -9,10 +9,8 @@ services:
       # The default is the port the image normally uses. Set POSTGRES_PORT in
       # .env where another Postgres already holds 5432 on your box.
       - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      # This directory runs only when the data directory is empty, so a schema
-      # change needs `npm run db:down` before `npm run db:up`.
-      - ./server/sql:/docker-entrypoint-initdb.d:ro
+    # No init directory. `npm start` runs the migrations, so a fresh container
+    # and an existing one reach the schema the same way.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flash -d flash"]
       interval: 2s

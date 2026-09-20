@@ -10,26 +10,22 @@ const BASE_URL = process.env['BASE_URL'] ?? 'http://127.0.0.1:3000'
 const DATABASE_URL = process.env['DATABASE_URL'] ?? 'postgres://flash:flash@127.0.0.1:5432/flash'
 const CONNECTIONS = Number(process.env['BENCH_CONNECTIONS'] ?? 500)
 const SECONDS = Number(process.env['BENCH_SECONDS'] ?? 10)
-const STOCK = Number(process.env['SALE_STOCK'] ?? 1000)
-const START_MS = Date.parse(process.env['SALE_START'] ?? '2026-01-01T00:00:00Z')
-const END_MS = Date.parse(process.env['SALE_END'] ?? '2036-01-01T00:00:00Z')
 /** The server reuses one read of the sale for this long, so a reset waits it out. */
 const CACHE_MS = 250
 
 /**
- * Opens the sale again. Without it a sold-out sale answers every POST from the
+ * Puts every unit back. Without it a sold-out sale answers every POST from the
  * cached read, and the number below would measure the fast path and not the
  * transaction.
+ *
+ * The count returns to `total_units`, which the migration wrote.
  */
 async function openTheSale(): Promise<void> {
   const pool = new Pool({ connectionString: DATABASE_URL, application_name: 'bench' })
   try {
     await pool.query('TRUNCATE orders')
-    await pool.query('DELETE FROM stock')
-    await pool.query(
-      'INSERT INTO stock (id, units_left, start_at, end_at) VALUES (1, $1, $2, $3)',
-      [STOCK, new Date(START_MS), new Date(END_MS)],
-    )
+    const { rowCount } = await pool.query('UPDATE stock SET units_left = total_units WHERE id = 1')
+    if (rowCount === 0) throw new Error('the campaign row is missing. Run npm run db:migrate.')
     await new Promise((done) => setTimeout(done, CACHE_MS * 2))
   } finally {
     await pool.end()

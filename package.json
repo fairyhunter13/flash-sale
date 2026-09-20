@@ -20,6 +20,7 @@
     "stress": "npm run stress -w stress",
     "bench": "npm run bench -w stress",
     "db:up": "docker compose up -d",
+    "db:migrate": "node --env-file-if-exists=.env --experimental-strip-types server/src/db/migrate.ts",
     "db:down": "docker compose down -v"
   },
   "devDependencies": {

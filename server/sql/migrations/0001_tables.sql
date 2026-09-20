@@ -1,18 +1,23 @@
--- Three tables. `stock` holds the one row every buyer competes for. `orders`
--- holds one row for each buyer who won. `queue_offsets` holds how far the
--- workers have read, in the same database as the rows, so a record cannot be
--- marked read without its order row.
+-- `queue_offsets` is here, and not in Kafka, so a worker commits how far it
+-- read in the same transaction as the order row it wrote.
 
 CREATE TABLE IF NOT EXISTS stock (
-  id         int         PRIMARY KEY,
-  units_left int         NOT NULL,
-  start_at   timestamptz NOT NULL,
-  end_at     timestamptz NOT NULL,
+  id          int         PRIMARY KEY,
+  -- The units the campaign started with. `units_left` alone cannot answer a
+  -- restart, because the process needs the total to know what Redis may hand out.
+  total_units int         NOT NULL,
+  units_left  int         NOT NULL,
+  start_at    timestamptz NOT NULL,
+  end_at      timestamptz NOT NULL,
   -- One sale, so one row. A second row cannot be written at all.
   CONSTRAINT stock_single_row CHECK (id = 1),
   -- The third guard. The gate already refuses to go below 0, so this turns a
   -- future defect into a failed transaction and never into a sold unit.
-  CONSTRAINT stock_never_negative CHECK (units_left >= 0)
+  CONSTRAINT stock_never_negative CHECK (units_left >= 0),
+  CONSTRAINT stock_never_over_total CHECK (units_left <= total_units),
+  -- A campaign that ends before it starts is never open, and the page would
+  -- report `closed` with no reason a reader can see.
+  CONSTRAINT stock_window_ordered CHECK (end_at > start_at)
 );
 
 CREATE TABLE IF NOT EXISTS orders (

@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import { PostgreSqlContainer } from '@testcontainers/postgresql'
 import { RedisContainer } from '@testcontainers/redis'
 import { GenericContainer, Wait } from 'testcontainers'
@@ -29,8 +28,6 @@ const KAFKA_HOST_PORT = 19_092
  * first. Kafka is the slow one, at about 20 seconds.
  */
 export default async function setup(project: TestProject) {
-  const schema = readFileSync(new URL('../../sql/schema.sql', import.meta.url), 'utf8')
-
   const [postgres, redis, kafka] = await Promise.all([
     new PostgreSqlContainer('postgres:16-alpine')
       .withDatabase('flash')
@@ -61,8 +58,7 @@ export default async function setup(project: TestProject) {
       .start(),
   ])
 
-  await postgres.exec(['psql', '-U', 'flash', '-d', 'flash', '-c', schema])
-
+  // No schema here. Each test file migrates its own Postgres schema in `poolFor`.
   project.provide('databaseUrl', postgres.getConnectionUri())
   project.provide('redisUrl', redis.getConnectionUrl())
   project.provide('kafkaBroker', `127.0.0.1:${KAFKA_HOST_PORT}`)
