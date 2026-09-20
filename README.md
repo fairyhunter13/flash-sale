@@ -312,8 +312,10 @@ it still ships no built-in pooler, so this stays a separate component.
 
 ### The one stock row
 
-**What breaks.** Every winner locks row `id = 1`, so the winners are serialized by design. At 1,000
-units that is 1,000 serialized transactions, which is not a problem. At 1,000,000 units it is.
+**What breaks.** A queue worker takes the unit with an `UPDATE` on row `id = 1`, so the writes are
+serialized on that row. The buyer never waits for it, because Redis already answered them. At 1,000
+units that is 1,000 serialized writes inside the drain, which is not a problem. At 1,000,000 units
+the drain is the bottleneck.
 
 **The change.** Split the stock into `N` rows of `stock / N` and hash the buyer to one of them. That
 trades a perfect sell-out for throughput, because one shard can empty while another still holds
@@ -327,8 +329,8 @@ whatever the database does.
 **The change, in the order it pays off.**
 
 1. **More API processes.** Fastify holds no state, so `N` processes behind one load balancer answer
-   `N` times the requests. The decision stays correct, because the decision is in the transaction
-   and not in the process.
+   `N` times the requests. The decision stays correct, because one Redis holds the count for every
+   process. A process is a caller here, and never a decider.
 2. **A waiting room.** Admit a bounded number of buyers per second to the purchase route and give
    everyone else a queue position. The sale sells out at the same moment either way, and this is the
    difference between a fast refusal and a timeout.
@@ -356,7 +358,7 @@ serves them all. The static files belong on a CDN, and the SSE stream stays on t
 Every change above, drawn as one picture. Nothing in it is built here, and each box is named in the
 list above with the measurement that would call for it.
 
-![The target: CDN and a waiting room at the edge, N Fastify processes with a shared Redis shed cache, and PgBouncer in front of a Postgres primary with a read replica and a queue](diagrams/architecture-scale.svg)
+![The target: CDN and a waiting room at the edge, N Fastify processes that all decide in one Redis, Kafka with more partitions and more workers, and PgBouncer in front of a Postgres primary with a read replica](diagrams/architecture-scale.svg)
 
 ## Why Redis, a queue and a database
 

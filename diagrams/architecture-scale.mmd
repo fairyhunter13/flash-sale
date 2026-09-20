@@ -6,20 +6,24 @@ architecture-beta
     group tier(logos:kubernetes)[API tier N processes]
     service api1(logos:nodejs-icon)[Fastify one of N] in tier
     service api2(logos:nodejs-icon)[Fastify one of N] in tier
-    service shed(logos:redis)[Redis shared shed cache] in tier
 
-    group data(mdi:database)[Data tier]
+    group hot(logos:redis)[Hot state decides every purchase]
+    service redis(logos:redis)[Redis one count for every process] in hot
+
+    group bus(mdi:tray-full)[Queue]
+    service kafka(logos:kafka-icon)[Kafka more partitions and more workers] in bus
+
+    group data(mdi:database)[Permanent state]
     service pgb(mdi:swap-horizontal)[PgBouncer transaction mode] in data
-    service pg(logos:postgresql)[Postgres primary the decider] in data
+    service pg(logos:postgresql)[Postgres primary orders and units] in data
     service replica(logos:postgresql)[Read replica status reads] in data
-    service queue(mdi:tray-full)[Queue receipts and email] in data
 
     cdn:R --> L:lb
     lb:B --> T:api1
     lb:R --> L:api2
-    api1:R --> L:shed
-    api2:B --> T:shed
-    api1:B --> T:pgb
+    api1:R --> L:redis
+    api2:R --> L:redis
+    api2:B --> T:kafka
+    kafka:R --> L:pgb
     pgb:R --> L:pg
     pg:R --> L:replica
-    pg:B --> T:queue
