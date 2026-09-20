@@ -10,7 +10,7 @@ const ENV_FILE = new URL('../.env', import.meta.url)
 if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE)
 
 const BASE_URL = process.env['BASE_URL'] ?? 'http://127.0.0.1:3000'
-const DATABASE_URL = process.env['DATABASE_URL'] ?? 'postgres://flash:flash@127.0.0.1:5499/flash'
+const DATABASE_URL = process.env['DATABASE_URL'] ?? 'postgres://flash:flash@127.0.0.1:5432/flash'
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://127.0.0.1:6379'
 /** The two keys the sale keeps hot. They must match server/src/queue/pipeline.ts. */
 const SOLD_KEY = 'sale:sold'

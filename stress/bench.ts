@@ -7,7 +7,7 @@ const ENV_FILE = new URL('../.env', import.meta.url)
 if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE)
 
 const BASE_URL = process.env['BASE_URL'] ?? 'http://127.0.0.1:3000'
-const DATABASE_URL = process.env['DATABASE_URL'] ?? 'postgres://flash:flash@127.0.0.1:5499/flash'
+const DATABASE_URL = process.env['DATABASE_URL'] ?? 'postgres://flash:flash@127.0.0.1:5432/flash'
 const CONNECTIONS = Number(process.env['BENCH_CONNECTIONS'] ?? 500)
 const SECONDS = Number(process.env['BENCH_SECONDS'] ?? 10)
 const STOCK = Number(process.env['SALE_STOCK'] ?? 1000)
