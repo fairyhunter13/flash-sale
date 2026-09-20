@@ -1,0 +1,26 @@
+architecture-beta
+    group browser(mdi:monitor)[Buyer]
+    service page(logos:react)[React 19 page] in browser
+
+    group api(logos:nodejs-icon)[API process]
+    service http(mdi:api)[Fastify 5 routes and SSE] in api
+    service pipe(mdi:lightning-bolt)[Pipeline decides in Redis] in api
+    service work(mdi:cog-outline)[4 queue workers] in api
+    service pool(mdi:transit-connection-variant)[pg Pool max 20] in api
+
+    group hot(logos:redis)[Hot state]
+    service redis(logos:redis)[Redis 7 sold count and buyers] in hot
+
+    group bus(mdi:tray-full)[Queue]
+    service kafka(logos:kafka-icon)[Kafka 4 topic sale wins 4 partitions] in bus
+
+    group data(mdi:database)[Permanent state]
+    service pg(logos:postgresql)[Postgres 16 stock orders offsets] in data
+
+    page:R --> L:http
+    http:R --> L:pipe
+    pipe:R --> L:redis
+    pipe:B --> T:kafka
+    kafka:R --> L:work
+    work:B --> T:pool
+    pool:R --> L:pg

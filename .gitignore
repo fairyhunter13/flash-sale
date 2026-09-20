@@ -16,11 +16,17 @@ private/
 # describes an older design only misleads them.
 CLAUDE.md
 concepts/
-docs/
 scripts/
+
+# docs/ holds the same working notes, with one exception. The experiment record is
+# the answer to "why not Redis and a queue", and a reviewer needs it. The rule is
+# docs/* and not docs/, because git cannot re-include a file inside a directory it
+# already excluded.
+docs/*
+!docs/design-experiments.md
 
 # The browser tests and the diagram renderer. Neither is asked for, and both
 # pull a large toolchain that a reviewer does not need to install to read the
-# code. The diagram they produce IS committed, at architecture.svg.
+# code. The diagram they produce IS committed, under diagrams/.
 e2e/
 diagram-build/
