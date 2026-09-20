@@ -11,11 +11,11 @@ import { buildApp, type App } from '../src/server.ts'
 const START = Date.parse('2026-06-01T00:00:00Z')
 const END = Date.parse('2036-06-01T00:00:00Z')
 
-function config(stock: number): Config {
+function config(stock: number, startMs = START, endMs = END): Config {
   return Object.freeze({
     stock,
-    startMs: START,
-    endMs: END,
+    startMs,
+    endMs,
     databaseUrl: 'postgres://unused/unused',
     dbPoolMax: 4,
     redisUrl: inject('redisUrl'),
@@ -65,6 +65,17 @@ afterEach(async () => {
   await app.fastify.close()
 })
 
+/**
+ * Replaces the app the setup built, with a different sale. The stock row holds
+ * the window, and `seed` never overwrites a row that is there, so the row goes
+ * first.
+ */
+async function rebuild(stock: number, startMs: number, endMs: number, tag: string): Promise<void> {
+  await app.fastify.close()
+  await pool.query('DELETE FROM stock')
+  app = await buildApp(config(stock, startMs, endMs), pool, undefined, `t_routes_${run}_${tag}`)
+}
+
 describe('the routes', () => {
   it('GET /api/sale answers the state', async () => {
     const answer = await app.fastify.inject({ method: 'GET', url: '/api/sale' })
@@ -76,6 +87,35 @@ describe('the routes', () => {
       startsAt: new Date(START).toISOString(),
       endsAt: new Date(END).toISOString(),
     })
+  })
+
+  it('GET /api/sale answers pending before the window opens', async () => {
+    const soon = Date.now() + 60_000
+    await rebuild(1000, soon, soon + 60_000, 'pending')
+
+    const answer = await app.fastify.inject({ method: 'GET', url: '/api/sale' })
+
+    expect(answer.statusCode).toBe(200)
+    expect(answer.json().state).toBe('pending')
+  })
+
+  it('GET /api/sale answers closed after the window ends', async () => {
+    const gone = Date.now() - 60_000
+    await rebuild(1000, gone - 60_000, gone, 'closed')
+
+    const answer = await app.fastify.inject({ method: 'GET', url: '/api/sale' })
+
+    expect(answer.statusCode).toBe(200)
+    expect(answer.json()).toMatchObject({ state: 'closed', stockLeft: 1000 })
+  })
+
+  it('GET /api/sale answers sold-out when the window is open and nothing is left', async () => {
+    await rebuild(0, START, END, 'soldout')
+
+    const answer = await app.fastify.inject({ method: 'GET', url: '/api/sale' })
+
+    expect(answer.statusCode).toBe(200)
+    expect(answer.json()).toMatchObject({ state: 'sold-out', stockLeft: 0 })
   })
 
   it('POST /api/purchase answers one outcome', async () => {
