@@ -22,10 +22,10 @@ Open `http://127.0.0.1:3000`. The page is served by the same server as the API, 
 and no CORS.
 
 `.env.example` opens the sale in 2026 and closes it in 2036, so the sale is open the moment you
-start. Change `SALE_START` and `SALE_END` to see the other states. Where Postgres already runs on
-your box, change `POSTGRES_PORT` and the `DATABASE_URL` beside it.
+start. Change `SALE_START` and `SALE_END` to see the other states. Where Postgres, Redis or Kafka already runs on
+your box, change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT`, and the URL beside it.
 
-**Tests.** `npm test` runs all 53. Postgres, Redis and Kafka are all real, started by
+**Tests.** `npm test` runs all 62. Postgres, Redis and Kafka are all real, started by
 testcontainers, so Docker must be running. Nothing is mocked.
 
 **While you develop.** `npm run dev` runs the server and Vite together. Vite serves the page on
@@ -127,6 +127,13 @@ beside it, so the diagram stays a text file that a reviewer can diff and change.
 
 A winner's place then travels to Kafka in one record, keyed by the buyer.
 
+**Why step 2 is there at all.** `SADD` is the only "one unit for each buyer" check on the fast
+path, and it is atomic, so two parallel attempts by one buyer can never both read 1. Without it a
+repeat buyer reaches `INCR`, and the counter drops a unit for a buyer who already holds one.
+Postgres still refuses the second order row at `UNIQUE (user_id)`, so nobody gets two units. The
+unit is gone from the count all the same, so the sale reads sold out with fewer than 1,000 order
+rows. `SADD` moves that refusal off Postgres and onto the fast path.
+
 **The set grows with the stock, and never with the traffic.** Step 4 is the reason. 30,000 buyers
 against 1,000 units left 1,000 members and 47,504 bytes of Redis memory. The same run without step 4
 held 30,000 members and 1,461,456 bytes, which is 30.8 times more. A design that keeps every buyer
@@ -218,6 +225,21 @@ The last two guards are in `server/sql/schema.sql`, and `server/test/schema.spec
 by trying to break it. A defect in the worker then costs a rolled-back transaction, never a sold
 unit.
 
+## What happens when something breaks
+
+Each row below is a fault that was injected and measured. The id names the run in
+[`docs/design-experiments.md`](docs/design-experiments.md).
+
+| What breaks | What the buyer gets | What the record shows |
+| --- | --- | --- |
+| Postgres stops | The buyer still wins in Redis, and the win waits in Kafka | F15: the order rows held all 1,000 wins after the restart. `server/test/routes.spec.ts` asserts the 500 while it is down |
+| The Postgres link adds 2 s of delay | The answer is unchanged, and the drain takes longer | F4: 1,000 order rows, at 1,740 decisions a second |
+| The server is killed mid-sale | No unit comes back | F2: the count is rebuilt from the order rows |
+| Redis is lost | The counter is rebuilt from `max(seq)`, and never from the row count | F19: 1,000 buyers, rebuilt exactly, in 4 ms |
+| 1 of 4 workers is killed while the queue drains | Nothing is lost, and nothing is written twice | F20: 0 rows lost, 0 rows doubled |
+
+16 more faults were injected, and the record of each one is in that document.
+
 ## Measured
 
 On this box: Intel Core Ultra 9 275HX, 24 cores, 62 GB RAM, Node 24.11.1, and Postgres 16, Redis 7
@@ -232,7 +254,7 @@ and Kafka 4 in Docker. Every number below names the command that produced it.
 | `GET /api/sale` throughput | 31,991 a second, p50 13 ms, p99 51 ms | `npm run bench` |
 | `POST /api/purchase` throughput | 33,274 a second, p50 13 ms, p99 31 ms | `npm run bench` |
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
-| Tests | 53 over 10 files, against real Postgres, Redis and Kafka | `npm test` |
+| Tests | 62 over 11 files, against real Postgres, Redis and Kafka | `npm test` |
 
 **The purchase route is now as fast as the read route, and that is the whole point of the design.**
 Both are answered by Redis. The earlier version opened a Postgres transaction on every purchase and
@@ -343,11 +365,16 @@ every fault injected, is in [`docs/design-experiments.md`](docs/design-experimen
 | --- | --- | --- | --- | --- | --- |
 | Single-writer actor, one process owns the count | 15,194 | 20.47 ms | 198.51 ms | 0 | strong, and one process only |
 | The same, fenced by a Postgres epoch row | 11,167 | 28.75 ms | 239.84 ms | 0 | fenced, and 477 silent wins |
-| **Redis, Kafka and Postgres (this repository)** | **6,110** | **20.21 ms** | **946.09 ms** | **0** | eventual |
+| **Redis, Kafka and Postgres (this repository)** | **6,424** | **14.09 ms** | **873.73 ms** | **0** | eventual |
 | One Postgres transaction, the earlier design | 6,097 | 12.93 ms | 599.01 ms | 0 | strong |
 | Redis for session state, Postgres still deciding | 5,683 | 35.51 ms | 538.8 ms | 0 | strong |
-| A Redis token list, `LPOP` as the reservation | 5,423 | 18.58 ms | 930.72 ms | 475 | eventual |
+| A Redis token list, `LPOP` as the reservation | 5,423 | 18.58 ms | 930.72 ms | 0 \* | eventual |
+| One Postgres transaction, with the pool guard | 5,179 | 17.77 ms | 758.02 ms | 0 | strong |
+| The first Redis build, an unbounded buyer set | 4,546 | 17.72 ms | 1,080.75 ms | 0 | eventual |
 | Postgres as its own cache, an `UNLOGGED` table | 3,402 | 52.53 ms | 923.09 ms | 0 | strong |
+
+\* 0 under this load. The same design oversold 475 units when Redis was killed and rebuilt, at
+2,789 decisions a second. That run is F14 in [`docs/design-experiments.md`](docs/design-experiments.md).
 
 Three readings matter, and the first one is the uncomfortable one.
 
@@ -424,8 +451,8 @@ one does not claim.
 ## Layout
 
 ```
-server/   Fastify, the Redis pipeline, the Postgres gate, the schema, 46 tests
-web/      React 19 on Vite, 7 tests
+server/   Fastify, the Redis pipeline, the Postgres gate, the schema, 49 tests
+web/      React 19 on Vite, 13 tests
 stress/   the correctness run, and the throughput bench
 ```
 
@@ -444,7 +471,7 @@ stress/   the correctness run, and the throughput bench
 | A configurable start and end time, and purchases only inside it | `SALE_START` and `SALE_END`, checked before any store is read. `server/test/pipeline.spec.ts` |
 | One product with a fixed quantity | one row in `stock`, with `CHECK (units_left >= 0)` and a single-row constraint |
 | One unit per user | `SADD sale:buyers` refuses the second attempt, and `UNIQUE (user_id)` on `orders` refuses it again. `server/test/schema.spec.ts` |
-| An endpoint for the sale state | `GET /api/sale`, and `GET /api/sale/stream` for the live form |
+| An endpoint for the sale state | `GET /api/sale`, and `GET /api/sale/stream` for the live form. The brief's "upcoming, active, ended" are `pending`, `open`, and `sold-out` or `closed`. The sale splits "ended" in two, because a buyer needs to know whether the units ran out or the clock did |
 | An endpoint to attempt a purchase | `POST /api/purchase` |
 | An endpoint for what a buyer holds | `GET /api/purchase/:userId`, which reads Postgres and therefore lags a fresh win by the drain time |
 | A simple frontend with a state line, an identifier field, a Buy Now button and feedback | `web/`, React 19. It names all 5 outcomes and it updates with no reload |
@@ -452,7 +479,7 @@ stress/   the correctness run, and the throughput bench
 | High throughput, and a design that scales | the Measured and Scaling sections, each number naming its command. The write is already off the request path |
 | Robustness and fault tolerance | a slow database costs drain time and no answers. A rolled-back transaction writes no order. A lost Redis is rebuilt from the order rows, and `max(seq)` gives the next place, never the row count |
 | Concurrency control, with no overselling | `INCR` in Redis, then the row lock in the `UPDATE`, proved by the 10,000-buyer run and by 20 injected faults |
-| Unit and integration tests | 53 tests over 10 files, against real Postgres, Redis and Kafka through testcontainers |
+| Unit and integration tests | 62 tests over 11 files, against real Postgres, Redis and Kafka through testcontainers. `web/test/flow.spec.tsx` drives the page through the real HTTP client |
 | Stress tests, and an explanation of the results | `npm run stress` for the counts, `npm run bench` for the speed, and the Measured section for the reading |
 | TypeScript, Node with Fastify, React | all three, type checked by `npm run build` |
 | Cloud services in mind, and mocking allowed with an explanation | the 9 measured designs above, `docs/design-experiments.md`, and the target picture. Nothing is mocked |
