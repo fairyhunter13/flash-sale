@@ -226,7 +226,7 @@ and Kafka 4 in Docker. Every number below names the command that produced it.
 | Measure | Number | Command |
 | --- | --- | --- |
 | Buyers, and the units they took | 10,000 buyers, exactly 1,000 won | `npm run stress` |
-| Time for all 10,000 | 1.19 s to 1.41 s over 12 runs, so 7,100 to 8,380 a second | `npm run stress` |
+| Time for all 10,000 | 1.19 s to 1.47 s over 13 runs, so 6,800 to 8,380 a second | `npm run stress` |
 | Postgres backends at the peak | 4, for 500 open sockets | `npm run stress` |
 | The queue drain | every one of the 1,000 order rows landed, 566 ms to 3,285 ms after the last buyer was answered | `npm run stress` |
 | `GET /api/sale` throughput | 31,991 a second, p50 13 ms, p99 51 ms | `npm run bench` |
@@ -240,7 +240,7 @@ ran at 11,529 a second, so moving the decision to Redis raised the refusal path 
 
 **What the two bench numbers do not cover.** `npm run bench` drives one repeat buyer against a sale
 that is already sold out, so it measures the refusal path and never the winning path. The winning
-path is measured by `npm run stress`, which is the 7,100 to 8,380 a second above, and that number
+path is measured by `npm run stress`, which is the 6,800 to 8,380 a second above, and that number
 includes the Kafka send.
 
 **What the numbers do not mean.** The load generator and the server share 24 cores, so every number
@@ -266,7 +266,7 @@ opens, whatever arrives in front of it.
 
 | Open sockets | `DB_POOL_MAX` | Peak Postgres backends | Requests a second |
 | --- | --- | --- | --- |
-| 500 | 20 | 4 | 7,100 to 8,380 |
+| 500 | 20 | 4 | 6,800 to 8,380 |
 
 4 of the 20 allowed connections, for 500 open sockets. The buyer path asks the pool for nothing at
 all, because Redis answers it. Only the 4 queue workers and the page reads open a connection, and
