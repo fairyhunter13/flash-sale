@@ -73,8 +73,12 @@ count, because autocannon reads its `amount` as a per-connection quota.
 
 ![The system today: a React page, a Fastify process that decides in Redis and produces to Kafka, 4 queue workers, and Postgres 16 holding the permanent state](diagrams/architecture.svg)
 
+The picture above draws the path a purchase takes. `GET /api/sale` reads too: it asks `Pipeline`
+for the units left, which is Redis, and it asks the pool for the sale window, which is Postgres. The
+flowchart below draws those 2 reads as well, and it names the call on each arrow.
+
 <details>
-<summary>The same diagram as Mermaid source, with the call on each arrow</summary>
+<summary>The same system as Mermaid source, with the read paths and the call on each arrow</summary>
 
 ```mermaid
 flowchart LR
@@ -103,7 +107,7 @@ flowchart LR
 `diagrams/architecture.svg` is rendered from `diagrams/architecture.mmd` by `mermaid-cli` with the Iconify `logos` and
 `mdi` packs. The picture is committed, because GitHub renders a Mermaid `architecture-beta` block but
 does not register those icon packs, so the icons arrive as broken placeholders. The source sits
-beside it, so the diagram stays a text file that a reviewer can diff and change.
+beside it, so the diagram stays a text file that a reader can diff and change.
 
 **Three places, and each one does one job.**
 
@@ -270,7 +274,7 @@ is a floor and not a ceiling. Nothing here is tuned. There is one Node process a
 
 ## Scaling
 
-The brief asks what breaks under a larger load. Each bottleneck below carries the measurement that
+This section answers what breaks under a larger load. Each bottleneck below carries the measurement that
 found it, and the change that moves it.
 
 ### Database connections, which is the one people fear
@@ -356,7 +360,7 @@ list above with the measurement that would call for it.
 
 ## Why Redis, a queue and a database
 
-Three stores is more than this brief needs, so the choice has to be earned. It was earned by
+Three stores is more than one flash sale needs, so the choice has to be earned. It was earned by
 building the alternatives and measuring them. **Nine designs were built and run on this box**, each
 against the same 10,000 buyers and the same 4 numbers. The full record, with every experiment and
 every fault injected, is in [`docs/design-experiments.md`](docs/design-experiments.md).
@@ -431,9 +435,9 @@ to prove the set holds 5.
 **Postgres, and not SQLite.** For 1,000 rows written by one process, SQLite is enough and it needs no
 container. Postgres is here because it is the store a real sale uses, so the design does not change
 when the sale grows. That is the trade: one container in exchange for a design that survives the
-next requirement.
+next change.
 
-**Nothing is mocked.** The brief allows a mocked cloud service. The database is real Postgres, in
+**Nothing is mocked.** A fake store would have been cheaper. The database is real Postgres, in
 Docker for a run and started by testcontainers for a test. So the code does not change when it moves
 to a managed instance.
 
@@ -444,8 +448,8 @@ nothing. SSE reconnects by itself, and it is plain HTTP.
 so one `npm ci` and one `npm test` cover both. What it gives up: the root `package.json` holds
 scripts that fan out, so a reader must open it to see what `npm test` runs.
 
-**What is deliberately absent.** No authentication, because the brief names a username or an email
-as the whole identity. No payment. No deployment. No rate limit, which a real sale needs and this
+**What is deliberately absent.** No authentication, because a username or an email is the whole
+identity a flash sale needs. No payment. No deployment. No rate limit, which a real sale needs and this
 one does not claim.
 
 ## Layout
@@ -464,14 +468,14 @@ stress/   the correctness run, and the throughput bench
 | `.env.example` | every number the server reads, with no constant hidden in the source |
 | `docs/design-experiments.md` | the 9 designs that were built and measured, and why this one ships |
 
-## Where each requirement is answered
+## What the sale does, and where
 
-| Asked for | Answered by |
+| Capability | Where it lives |
 | --- | --- |
 | A configurable start and end time, and purchases only inside it | `SALE_START` and `SALE_END`, checked before any store is read. `server/test/pipeline.spec.ts` |
 | One product with a fixed quantity | one row in `stock`, with `CHECK (units_left >= 0)` and a single-row constraint |
 | One unit per user | `SADD sale:buyers` refuses the second attempt, and `UNIQUE (user_id)` on `orders` refuses it again. `server/test/schema.spec.ts` |
-| An endpoint for the sale state | `GET /api/sale`, and `GET /api/sale/stream` for the live form. The brief's "upcoming, active, ended" are `pending`, `open`, and `sold-out` or `closed`. The sale splits "ended" in two, because a buyer needs to know whether the units ran out or the clock did |
+| An endpoint for the sale state | `GET /api/sale`, and `GET /api/sale/stream` for the live form. A buyer thinks in 3 states: upcoming, active and ended. Those are `pending`, `open`, and `sold-out` or `closed`. The sale splits "ended" in two, because a buyer needs to know whether the units ran out or the clock did |
 | An endpoint to attempt a purchase | `POST /api/purchase` |
 | An endpoint for what a buyer holds | `GET /api/purchase/:userId`, which reads Postgres and therefore lags a fresh win by the drain time |
 | A simple frontend with a state line, an identifier field, a Buy Now button and feedback | `web/`, React 19. It names all 5 outcomes and it updates with no reload |
@@ -482,5 +486,4 @@ stress/   the correctness run, and the throughput bench
 | Unit and integration tests | 62 tests over 11 files, against real Postgres, Redis and Kafka through testcontainers. `web/test/flow.spec.tsx` drives the page through the real HTTP client |
 | Stress tests, and an explanation of the results | `npm run stress` for the counts, `npm run bench` for the speed, and the Measured section for the reading |
 | TypeScript, Node with Fastify, React | all three, type checked by `npm run build` |
-| Cloud services in mind, and mocking allowed with an explanation | the 9 measured designs above, `docs/design-experiments.md`, and the target picture. Nothing is mocked |
-| A README with the design, the trade-offs, the diagram, the run steps and the stress steps | this file |
+| Ready for managed services | every store is a managed product, and nothing is mocked. `docs/design-experiments.md` holds the 9 measured designs, and the Scaling section holds the target picture |

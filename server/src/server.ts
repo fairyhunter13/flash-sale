@@ -63,7 +63,7 @@ export async function buildApp(
 const WEB_DIST = fileURLToPath(new URL('../../web/dist/', import.meta.url))
 
 /**
- * Serves the built page from the same origin as the API, so a reviewer runs
+ * Serves the built page from the same origin as the API, so a reader runs
  * `npm run build` then `npm start` and opens one URL. In development Vite
  * serves the page instead and proxies /api here, so this does nothing.
  */

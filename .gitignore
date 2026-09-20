@@ -6,27 +6,20 @@ coverage/
 .DS_Store
 .vite/
 
-# The brief and the private review notes. They name the company, so they never
-# leave this box. The repository becomes public.
+# Local notes. They stay on this box.
 private/
-
-# The working notes for this task, and not part of the deliverable. They are
-# kept on disk, because they hold the reasoning. They are not committed,
-# because a reviewer reads the code and the README, and a plan document that
-# describes an older design only misleads them.
 CLAUDE.md
 concepts/
 scripts/
 
-# docs/ holds the same working notes, with one exception. The experiment record is
-# the answer to "why not Redis and a queue", and a reviewer needs it. The rule is
-# docs/* and not docs/, because git cannot re-include a file inside a directory it
-# already excluded.
+# docs/ holds working notes, with one exception. The experiment record is the
+# answer to "why not one store", so it ships. The rule is docs/* and not docs/,
+# because git cannot re-include a file inside a directory it already excluded.
 docs/*
 !docs/design-experiments.md
 
-# The browser tests and the diagram renderer. Neither is asked for, and both
-# pull a large toolchain that a reviewer does not need to install to read the
-# code. The diagram they produce IS committed, under diagrams/.
+# The browser tests and the diagram renderer. Both pull a large toolchain that a
+# reader does not need to install. The diagram they produce IS committed, under
+# diagrams/.
 e2e/
 diagram-build/
