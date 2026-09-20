@@ -226,7 +226,7 @@ and Kafka 4 in Docker. Every number below names the command that produced it.
 | Measure | Number | Command |
 | --- | --- | --- |
 | Buyers, and the units they took | 10,000 buyers, exactly 1,000 won | `npm run stress` |
-| Time for all 10,000 | 1.19 s to 1.47 s over 13 runs, so 6,800 to 8,380 a second | `npm run stress` |
+| Time for all 10,000 | 1.19 s to 1.47 s over 18 runs, so 6,800 to 8,380 a second | `npm run stress` |
 | Postgres backends at the peak | 4, for 500 open sockets | `npm run stress` |
 | The queue drain | every one of the 1,000 order rows landed, 566 ms to 3,285 ms after the last buyer was answered | `npm run stress` |
 | `GET /api/sale` throughput | 31,991 a second, p50 13 ms, p99 51 ms | `npm run bench` |
