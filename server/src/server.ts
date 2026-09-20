@@ -56,6 +56,11 @@ async function main(): Promise<void> {
   // never sees more than DB_POOL_MAX connections from this process, whatever
   // the number of open sockets in front of it.
   const pool = new Pool({ connectionString: config.databaseUrl, max: config.dbPoolMax })
+  // A client the pool still holds sends its error to `pool.on('error')`. A
+  // client a request already checked out does not, so without the second line
+  // that error reaches no handler and Node ends the process mid-sale.
+  pool.on('error', (error: Error) => console.error(`an idle database client failed: ${error.message}`))
+  pool.on('connect', (client) => client.on('error', () => {}))
   const app = await buildApp(config, pool)
   await serveWeb(app.fastify)
   await app.fastify.listen({ port: config.port, host: config.host })
