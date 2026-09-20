@@ -4,6 +4,7 @@ import { poolFor } from './setup/db.ts'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
 import type { Config } from '../src/config.ts'
 import { Gate } from '../src/gate/gate.ts'
+import type { Pipeline } from '../src/queue/pipeline.ts'
 import { registerRoutes } from '../src/routes/index.ts'
 import { buildApp, type App } from '../src/server.ts'
 
@@ -17,10 +18,26 @@ function config(stock: number): Config {
     endMs: END,
     databaseUrl: 'postgres://unused/unused',
     dbPoolMax: 4,
+    redisUrl: inject('redisUrl'),
+    kafkaBrokers: [inject('kafkaBroker')],
+    queueWorkers: 1,
     port: 0,
     host: '127.0.0.1',
   })
 }
+
+/**
+ * A store that answers nothing. The routes must report a fault, and never a
+ * sold-out sale.
+ */
+const deadPipeline = {
+  left: async () => {
+    throw new Error('the hot state is down')
+  },
+  reserve: async () => {
+    throw new Error('the hot state is down')
+  },
+} as unknown as Pipeline
 
 let pool: Pool
 let app: App
@@ -33,10 +50,15 @@ afterAll(async () => {
   await pool.end()
 })
 
+let run = 0
+
 beforeEach(async () => {
   await pool.query('DELETE FROM orders')
   await pool.query('DELETE FROM stock')
-  app = await buildApp(config(1000), pool)
+  await pool.query('DELETE FROM queue_offsets')
+  // Its own keys and its own topic, so each test starts on an empty sale.
+  run += 1
+  app = await buildApp(config(1000), pool, undefined, `t_routes_${run}`)
 })
 
 afterEach(async () => {
@@ -88,6 +110,20 @@ describe('the routes', () => {
     expect(await app.gate.stockLeft()).toBe(1000)
   })
 
+  it('a purchase that wins reaches the database through the queue', async () => {
+    const won = await app.fastify.inject({
+      method: 'POST',
+      url: '/api/purchase',
+      payload: { userId: 'buyer-z' },
+    })
+    expect(won.json()).toEqual({ outcome: 'won' })
+
+    expect(await app.pipeline.drained()).toBe(true)
+
+    expect(await app.gate.winners()).toEqual([{ buyerId: 'buyer-z', seq: 1 }])
+    expect(await app.gate.stockLeft()).toBe(999)
+  })
+
   it('a dead database gives 500 and no outcome', async () => {
     // Port 1 answers nothing, so the routes hold a real Gate over a pool that
     // cannot reach a server.
@@ -98,7 +134,7 @@ describe('the routes', () => {
     })
     dead.on('error', () => {})
     const broken = Fastify({ logger: false })
-    registerRoutes(broken, new Gate(dead, 0))
+    registerRoutes(broken, new Gate(dead, 0), deadPipeline)
 
     const sale = await broken.inject({ method: 'GET', url: '/api/sale' })
     expect(sale.statusCode).toBe(500)

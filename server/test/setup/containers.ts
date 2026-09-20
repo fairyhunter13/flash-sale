@@ -1,32 +1,73 @@
 import { readFileSync } from 'node:fs'
 import { PostgreSqlContainer } from '@testcontainers/postgresql'
+import { RedisContainer } from '@testcontainers/redis'
+import { GenericContainer, Wait } from 'testcontainers'
 import type { TestProject } from 'vitest/node'
 
 declare module 'vitest' {
   interface ProvidedContext {
     databaseUrl: string
+    redisUrl: string
+    kafkaBroker: string
   }
 }
 
 /**
- * One Postgres for the whole run, on a port the host picks. So `npm test` is
- * the whole command, and it never collides with a database the box already
- * runs.
+ * The port on the host that the test broker answers on.
+ *
+ * A Kafka client is told where the broker is by the broker itself, in
+ * `advertised.listeners`. That address must already be right when the broker
+ * starts, so the port cannot be one the host picks at random.
+ */
+const KAFKA_HOST_PORT = 19_092
+
+/**
+ * One Postgres, one Redis and one Kafka for the whole run. So `npm test` is
+ * the whole command.
+ *
+ * The three start at the same time, because none of them needs another one
+ * first. Kafka is the slow one, at about 20 seconds.
  */
 export default async function setup(project: TestProject) {
   const schema = readFileSync(new URL('../../sql/schema.sql', import.meta.url), 'utf8')
 
-  const postgres = await new PostgreSqlContainer('postgres:16-alpine')
-    .withDatabase('flash')
-    .withUsername('flash')
-    .withPassword('flash')
-    .start()
+  const [postgres, redis, kafka] = await Promise.all([
+    new PostgreSqlContainer('postgres:16-alpine')
+      .withDatabase('flash')
+      .withUsername('flash')
+      .withPassword('flash')
+      .start(),
+    new RedisContainer('redis:7-alpine').start(),
+    // The same image and the same KRaft settings as docker-compose.yml, so the
+    // tests and the running server meet one broker version.
+    new GenericContainer('apache/kafka:4.0.0')
+      .withExposedPorts({ container: 9092, host: KAFKA_HOST_PORT })
+      .withEnvironment({
+        KAFKA_NODE_ID: '1',
+        KAFKA_PROCESS_ROLES: 'broker,controller',
+        KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093',
+        KAFKA_ADVERTISED_LISTENERS: `PLAINTEXT://127.0.0.1:${KAFKA_HOST_PORT}`,
+        KAFKA_CONTROLLER_QUORUM_VOTERS: '1@localhost:9093',
+        KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER',
+        KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT',
+        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: '1',
+        KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: '1',
+        KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: '1',
+        KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: '0',
+        CLUSTER_ID: 'flash-sale-test-cluster',
+      })
+      .withWaitStrategy(Wait.forLogMessage(/Kafka Server started/))
+      .withStartupTimeout(180_000)
+      .start(),
+  ])
 
   await postgres.exec(['psql', '-U', 'flash', '-d', 'flash', '-c', schema])
 
   project.provide('databaseUrl', postgres.getConnectionUri())
+  project.provide('redisUrl', redis.getConnectionUrl())
+  project.provide('kafkaBroker', `127.0.0.1:${KAFKA_HOST_PORT}`)
 
   return async () => {
-    await postgres.stop()
+    await Promise.all([postgres.stop(), redis.stop(), kafka.stop()])
   }
 }

@@ -1,5 +1,8 @@
 export type SaleState = 'pending' | 'open' | 'sold-out' | 'closed'
 
+/** The answer one buyer receives. */
+export type Outcome = 'won' | 'already-bought' | 'sold-out' | 'not-open' | 'over'
+
 export type SaleWindow = {
   readonly startMs: number
   readonly endMs: number

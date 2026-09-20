@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import type { Gate } from '../gate/gate.ts'
+import type { Pipeline } from '../queue/pipeline.ts'
 import { saleState, type SaleState } from '../gate/status.ts'
 
 export type SaleView = {
@@ -9,8 +10,15 @@ export type SaleView = {
   readonly endsAt: string
 }
 
-export async function readSale(gate: Gate, nowMs: number = Date.now()): Promise<SaleView> {
-  const { left, startMs, endMs } = await gate.snapshot()
+/**
+ * The window comes from the table, because that is what a restart reads back.
+ * The count comes from Redis, because that is what decides. A count read from
+ * Postgres would lag the sale by whatever the queue still holds, so the page
+ * would offer a unit that is already gone.
+ */
+export async function readSale(gate: Gate, pipeline: Pipeline, nowMs: number = Date.now()): Promise<SaleView> {
+  const { startMs, endMs } = await gate.snapshot()
+  const left = await pipeline.left()
   return {
     state: saleState(nowMs, left, { startMs, endMs }),
     stockLeft: left,
@@ -19,10 +27,10 @@ export async function readSale(gate: Gate, nowMs: number = Date.now()): Promise<
   }
 }
 
-export function registerRoutes(app: FastifyInstance, gate: Gate): void {
+export function registerRoutes(app: FastifyInstance, gate: Gate, pipeline: Pipeline): void {
   app.get('/api/sale', async (_request, reply) => {
     try {
-      return await readSale(gate)
+      return await readSale(gate, pipeline)
     } catch {
       // A store that does not answer is a fault, and never a sold-out sale.
       // The body carries no state field at all, so no caller can read one.
@@ -38,7 +46,7 @@ export function registerRoutes(app: FastifyInstance, gate: Gate): void {
     }
 
     try {
-      return { outcome: await gate.reserve(userId) }
+      return { outcome: await pipeline.reserve(userId) }
     } catch {
       return reply.code(500).send({ error: 'the purchase cannot be decided' })
     }

@@ -7,6 +7,9 @@ const complete = {
   SALE_END: '2036-01-01T00:00:00Z',
   DATABASE_URL: 'postgres://flash:flash@localhost:5432/flash',
   DB_POOL_MAX: '20',
+  REDIS_URL: 'redis://localhost:6379',
+  KAFKA_BROKERS: 'localhost:9092',
+  QUEUE_WORKERS: '4',
   PORT: '3000',
   HOST: '0.0.0.0',
 }
@@ -34,8 +37,26 @@ describe('the configuration', () => {
     expect(config.endMs).toBe(Date.parse('2036-01-01T00:00:00Z'))
     expect(config.databaseUrl).toBe('postgres://flash:flash@localhost:5432/flash')
     expect(config.dbPoolMax).toBe(20)
+    expect(config.redisUrl).toBe('redis://localhost:6379')
+    expect(config.kafkaBrokers).toEqual(['localhost:9092'])
+    expect(config.queueWorkers).toBe(4)
     expect(config.port).toBe(3000)
     expect(config.host).toBe('0.0.0.0')
+  })
+
+  it('KAFKA_BROKERS reads a list, and drops an empty entry', () => {
+    const many = { ...complete, KAFKA_BROKERS: 'one:9092, two:9092 ,,three:9092' }
+    expect(readConfig(many).kafkaBrokers).toEqual(['one:9092', 'two:9092', 'three:9092'])
+  })
+
+  it('a KAFKA_BROKERS of commas alone is refused', () => {
+    expect(() => readConfig({ ...complete, KAFKA_BROKERS: ' , , ' })).toThrow(/one or more host:port/)
+  })
+
+  it('a REDIS_URL that is not a redis address is refused', () => {
+    expect(() => readConfig({ ...complete, REDIS_URL: 'postgres://localhost:5432/flash' })).toThrow(
+      /It must start with redis/,
+    )
   })
 
   it('every problem is reported at once', () => {
@@ -43,7 +64,7 @@ describe('the configuration', () => {
       readConfig({})
       expect.unreachable('an empty environment must stop the boot')
     } catch (error) {
-      expect((error as ConfigError).problems).toHaveLength(6)
+      expect((error as ConfigError).problems).toHaveLength(9)
     }
   })
 

@@ -6,12 +6,14 @@ import { Pool } from 'pg'
 import { readConfig, type Config } from './config.ts'
 import { Gate } from './gate/gate.ts'
 import { registerOrderRoute } from './orders.ts'
+import { Pipeline } from './queue/pipeline.ts'
 import { registerRoutes } from './routes/index.ts'
 import { SaleTicker, registerStream } from './routes/stream.ts'
 
 export type App = {
   readonly fastify: FastifyInstance
   readonly gate: Gate
+  readonly pipeline: Pipeline
   readonly ticker: SaleTicker
 }
 
@@ -19,20 +21,43 @@ export type App = {
  * Builds the server without listening, so a test drives it through
  * `fastify.inject` and needs no port.
  */
-export async function buildApp(config: Config, pool: Pool, tickMs?: number): Promise<App> {
+export async function buildApp(
+  config: Config,
+  pool: Pool,
+  tickMs?: number,
+  // The server runs one sale, so it passes nothing. A test passes its own name
+  // here, and two test files then never share a Redis key or a topic.
+  namespace = '',
+): Promise<App> {
+  const sale = { stock: config.stock, startMs: config.startMs, endMs: config.endMs }
   const gate = new Gate(pool)
-  await gate.seed({ stock: config.stock, startMs: config.startMs, endMs: config.endMs })
+  await gate.seed(sale)
+
+  // The pipeline starts after the seed, because it rebuilds the hot state from
+  // the order rows when Redis holds no sale.
+  const pipeline = await Pipeline.start({
+    redisUrl: config.redisUrl,
+    kafkaBrokers: config.kafkaBrokers,
+    workers: config.queueWorkers,
+    sale,
+    gate,
+    namespace,
+  })
 
   // A hijacked SSE socket is never idle, so a shutdown waits forever without
-  // this. The onClose hook below ends each stream first.
+  // the flag. The onClose hook below ends each stream first.
   const fastify = Fastify({ logger: false, forceCloseConnections: true })
-  const ticker = tickMs === undefined ? new SaleTicker(gate) : new SaleTicker(gate, tickMs)
-  registerRoutes(fastify, gate)
+  const ticker =
+    tickMs === undefined ? new SaleTicker(gate, pipeline) : new SaleTicker(gate, pipeline, tickMs)
+  registerRoutes(fastify, gate, pipeline)
   registerOrderRoute(fastify, pool)
   registerStream(fastify, ticker)
-  fastify.addHook('onClose', async () => ticker.closeAll())
+  fastify.addHook('onClose', async () => {
+    ticker.closeAll()
+    await pipeline.close()
+  })
 
-  return { fastify, gate, ticker }
+  return { fastify, gate, pipeline, ticker }
 }
 
 const WEB_DIST = fileURLToPath(new URL('../../web/dist/', import.meta.url))

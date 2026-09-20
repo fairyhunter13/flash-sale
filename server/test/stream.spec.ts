@@ -14,6 +14,9 @@ function config(): Config {
     endMs: END,
     databaseUrl: 'postgres://unused/unused',
     dbPoolMax: 4,
+    redisUrl: inject('redisUrl'),
+    kafkaBrokers: [inject('kafkaBroker')],
+    queueWorkers: 1,
     port: 0,
     host: '127.0.0.1',
   })
@@ -53,11 +56,15 @@ afterAll(async () => {
   await pool.end()
 })
 
+let run = 0
+
 beforeEach(async () => {
   await pool.query('DELETE FROM orders')
   await pool.query('DELETE FROM stock')
+  await pool.query('DELETE FROM queue_offsets')
   // A 20 ms tick keeps the test short. The server runs at the 250 ms default.
-  app = await buildApp(config(), pool, 20)
+  run += 1
+  app = await buildApp(config(), pool, 20, `t_stream_${run}`)
   base = await app.fastify.listen({ port: 0, host: '127.0.0.1' })
 })
 
@@ -79,10 +86,13 @@ describe('the stream', () => {
     const first = await events.next()
     expect(first.value).toMatchObject({ state: 'open', stockLeft: 5 })
 
-    await app.gate.reserve('buyer-a', START + 60_000)
+    await app.pipeline.reserve('buyer-a', START + 60_000)
 
-    const second = await events.next()
-    expect(second.value).toMatchObject({ state: 'open', stockLeft: 4 })
+    // A tick can fire between the first read and the purchase, so the next
+    // block is not always the changed one. The test reads until the count
+    // moves, and it fails on the limit rather than on the first block.
+    const second = await eventWhere(events, (one) => one.stockLeft === 4)
+    expect(second).toMatchObject({ state: 'open', stockLeft: 4 })
 
     stop.abort()
     await waitFor(() => app.ticker.openConnections === 0)
@@ -107,6 +117,19 @@ describe('the stream', () => {
     await waitFor(() => app.ticker.openConnections === 0)
   })
 })
+
+/** The first event that answers the question, out of the next 20. */
+async function eventWhere(
+  events: AsyncGenerator<SaleEvent>,
+  wanted: (one: SaleEvent) => boolean,
+): Promise<SaleEvent> {
+  for (let read = 0; read < 20; read += 1) {
+    const next = await events.next()
+    if (next.done) break
+    if (wanted(next.value)) return next.value
+  }
+  throw new Error('the stream never sent the event this test waits for')
+}
 
 async function waitFor(ready: () => boolean, limitMs = 2000): Promise<void> {
   const until = Date.now() + limitMs

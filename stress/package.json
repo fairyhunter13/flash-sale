@@ -12,6 +12,7 @@
     "autocannon": "^8.0.0",
     "p-limit": "^7.1.0",
     "pg": "^8.16.0",
+    "redis": "^4.7.0",
     "undici": "^7.16.0"
   },
   "devDependencies": {

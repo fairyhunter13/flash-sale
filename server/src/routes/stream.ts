@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Gate } from '../gate/gate.ts'
+import type { Pipeline } from '../queue/pipeline.ts'
 import { readSale } from './index.ts'
 
 export const TICK_MS = 250
@@ -15,10 +16,12 @@ export class SaleTicker {
   private last = ''
 
   private readonly gate: Gate
+  private readonly pipeline: Pipeline
   private readonly tickMs: number
 
-  constructor(gate: Gate, tickMs: number = TICK_MS) {
+  constructor(gate: Gate, pipeline: Pipeline, tickMs: number = TICK_MS) {
     this.gate = gate
+    this.pipeline = pipeline
     this.tickMs = tickMs
   }
 
@@ -57,15 +60,15 @@ export class SaleTicker {
 
   /** Sends the current state to one page, whether it changed or not. */
   async sendNow(reply: FastifyReply): Promise<void> {
-    write(reply, JSON.stringify(await readSale(this.gate)))
+    write(reply, JSON.stringify(await readSale(this.gate, this.pipeline)))
   }
 
   private async tick(): Promise<void> {
     let body: string
     try {
-      body = JSON.stringify(await readSale(this.gate))
+      body = JSON.stringify(await readSale(this.gate, this.pipeline))
     } catch {
-      // Postgres stopped answering. Every page is closed, because a stream that
+      // A store stopped answering. Every page is closed, because a stream that
       // keeps its last state open tells the buyer a stale count is live.
       this.closeAll()
       return

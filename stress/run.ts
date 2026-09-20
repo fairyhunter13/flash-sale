@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { Pool } from 'pg'
 import pLimit from 'p-limit'
+import { createClient } from 'redis'
 import { Agent, request } from 'undici'
 
 // The root .env holds the ports this box uses, and nothing else loads it for a
@@ -10,6 +11,12 @@ if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE)
 
 const BASE_URL = process.env['BASE_URL'] ?? 'http://127.0.0.1:3000'
 const DATABASE_URL = process.env['DATABASE_URL'] ?? 'postgres://flash:flash@127.0.0.1:5499/flash'
+const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://127.0.0.1:6379'
+/** The two keys the sale keeps hot. They must match server/src/queue/pipeline.ts. */
+const SOLD_KEY = 'sale:sold'
+const BUYERS_KEY = 'sale:buyers'
+/** How long the run waits for the workers to write the last win into Postgres. */
+const DRAIN_MS = Number(process.env['STRESS_DRAIN_MS'] ?? 60_000)
 const STOCK = Number(process.env['SALE_STOCK'] ?? 1000)
 const BUYERS = Number(process.env['STRESS_BUYERS'] ?? 10_000)
 const CONNECTIONS = Number(process.env['STRESS_CONNECTIONS'] ?? 500)
@@ -37,7 +44,17 @@ function assertLocal(name: string, url: string): void {
 
 type Tally = Record<string, number>
 
-async function reset(pool: Pool): Promise<void> {
+/**
+ * Empties the sale in both stores.
+ *
+ * Redis holds the live count, so a reset that touches Postgres alone leaves the
+ * sale sold out and the next run wins nothing.
+ *
+ * `queue_offsets` stays. Each row is the point one worker reads from, so a
+ * worker that lost it would seek back to offset 0 and write the records of the
+ * previous run into the fresh sale.
+ */
+async function reset(pool: Pool, redis: RedisLike): Promise<void> {
   await pool.query('TRUNCATE orders')
   await pool.query('DELETE FROM stock')
   await pool.query('INSERT INTO stock (id, units_left, start_at, end_at) VALUES (1, $1, $2, $3)', [
@@ -45,8 +62,38 @@ async function reset(pool: Pool): Promise<void> {
     new Date(START_MS),
     new Date(END_MS),
   ])
+  await redis.del([SOLD_KEY, BUYERS_KEY])
   // The running server still holds the old count for one cache window.
   await new Promise((done) => setTimeout(done, CACHE_MS * 2))
+}
+
+type RedisLike = { del: (keys: string[]) => Promise<number>; quit: () => Promise<unknown> }
+
+/**
+ * Waits until the order rows stop arriving, and reports how long that took.
+ *
+ * A buyer is told `won` by Redis, and the row lands later, through Kafka. So a
+ * count read the moment the drive ends is short by whatever the queue still
+ * holds. The wait ends on the wanted count, or on 10 seconds with no new row.
+ *
+ * 10 and not 2. A fetch pause of 2.9 seconds was measured mid-drain, and the
+ * run then reported 760 of 1,000 rows although all 1,000 landed a moment
+ * later. A quiet window shorter than the longest pause reports a healthy queue
+ * as a failure.
+ */
+async function drain(pool: Pool, wanted: number): Promise<{ rows: number; ms: number }> {
+  const startedAt = performance.now()
+  const until = startedAt + DRAIN_MS
+  let rows = await countOrders(pool)
+  let quietSince = performance.now()
+  while (rows < wanted && performance.now() < until) {
+    await new Promise((done) => setTimeout(done, 50))
+    const now = await countOrders(pool)
+    if (now !== rows) quietSince = performance.now()
+    rows = now
+    if (performance.now() - quietSince > 10_000) break
+  }
+  return { rows, ms: Math.round(performance.now() - startedAt) }
 }
 
 /**
@@ -146,21 +193,26 @@ async function main(): Promise<void> {
   assertLocal('DATABASE_URL', DATABASE_URL)
 
   const pool = new Pool({ connectionString: DATABASE_URL, application_name: 'stress' })
+  const redis = createClient({ url: REDIS_URL })
+  await redis.connect()
   try {
-    await reset(pool)
-    console.log(`reset: units_left=${STOCK}, orders=0 rows`)
+    await reset(pool, redis as unknown as RedisLike)
+    console.log(`reset: units_left=${STOCK}, orders=0 rows, ${SOLD_KEY} and ${BUYERS_KEY} dropped`)
     console.log(`driving ${BUYERS} buyers, ${CONNECTIONS} connections`)
 
     const watcher = watchBackends(pool)
     const { tally, seconds } = await drive()
     const peak = watcher.stop()
 
+    const drained = await drain(pool, STOCK)
+    console.log(`queue drained in ${drained.ms} ms`)
+
     const checks: Check[] = [
       { name: 'won', got: tally['won'] ?? 0, want: STOCK },
       { name: 'sold-out', got: tally['sold-out'] ?? 0, want: BUYERS - STOCK },
       { name: 'other', got: BUYERS - (tally['won'] ?? 0) - (tally['sold-out'] ?? 0), want: 0 },
       { name: 'units left', got: await unitsLeft(pool), want: 0 },
-      { name: 'pg orders', got: await countOrders(pool), want: STOCK },
+      { name: 'pg orders', got: drained.rows, want: STOCK },
     ]
 
     const passed = report(checks, tally, seconds, peak)
@@ -168,6 +220,7 @@ async function main(): Promise<void> {
     if (!passed) process.exitCode = 1
   } finally {
     await pool.end()
+    await redis.quit()
   }
 }
 

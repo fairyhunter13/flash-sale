@@ -5,6 +5,11 @@ export type Config = {
   readonly databaseUrl: string
   /** The most Postgres connections this process ever opens. */
   readonly dbPoolMax: number
+  readonly redisUrl: string
+  /** One or more `host:port`, separated by commas. */
+  readonly kafkaBrokers: readonly string[]
+  /** Consumers in the group on this process. Kafka spreads the partitions over them. */
+  readonly queueWorkers: number
   readonly port: number
   readonly host: string
 }
@@ -91,6 +96,21 @@ class Reader {
   text(name: string, fallback: string): string {
     return this.raw(name) ?? fallback
   }
+
+  /** A comma-separated list, with every empty entry dropped. */
+  hosts(name: string, example: string): readonly string[] {
+    const value = this.raw(name)
+    if (value === undefined) {
+      this.problems.push(`${name} is not set. It must be one or more host:port, for example ${example}.`)
+      return []
+    }
+    const parts = value.split(',').map((one) => one.trim()).filter((one) => one !== '')
+    if (parts.length === 0) {
+      this.problems.push(`${name} is ${value}. It must be one or more host:port, for example ${example}.`)
+      return []
+    }
+    return Object.freeze(parts)
+  }
 }
 
 export function readConfig(env: Env = process.env): Config {
@@ -101,6 +121,9 @@ export function readConfig(env: Env = process.env): Config {
   const endMs = read.instant('SALE_END', '2036-01-01T00:00:00Z')
   const databaseUrl = read.url('DATABASE_URL', 'postgres', 'postgres://flash:flash@localhost:5432/flash')
   const dbPoolMax = read.wholeNumber('DB_POOL_MAX', '20')
+  const redisUrl = read.url('REDIS_URL', 'redis', 'redis://localhost:6379')
+  const kafkaBrokers = read.hosts('KAFKA_BROKERS', 'localhost:9092')
+  const queueWorkers = read.wholeNumber('QUEUE_WORKERS', '4')
   const port = read.wholeNumber('PORT', '3000')
   const host = read.text('HOST', '0.0.0.0')
 
@@ -112,5 +135,16 @@ export function readConfig(env: Env = process.env): Config {
 
   if (read.problems.length > 0) throw new ConfigError(read.problems)
 
-  return Object.freeze({ stock, startMs, endMs, databaseUrl, dbPoolMax, port, host })
+  return Object.freeze({
+    stock,
+    startMs,
+    endMs,
+    databaseUrl,
+    dbPoolMax,
+    redisUrl,
+    kafkaBrokers,
+    queueWorkers,
+    port,
+    host,
+  })
 }

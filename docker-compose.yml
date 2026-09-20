@@ -18,3 +18,47 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
+
+  redis:
+    image: redis:7-alpine
+    # everysec writes the log once a second, so a crash loses at most one
+    # second of the hot state. The order rows in Postgres lose nothing.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  kafka:
+    # KRaft mode, so one container is the broker and the controller together.
+    # No ZooKeeper, and no second image to run.
+    image: apache/kafka:4.0.0
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # Two listeners, because a client is told where the broker is by the
+      # broker itself. PLAINTEXT names the host port, so your machine reaches
+      # it. INTERNAL names the container, so the healthcheck below reaches it.
+      # One listener cannot answer both, because the host address means nothing
+      # inside the container.
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:${KAFKA_PORT:-9092},INTERNAL://kafka:9094
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: flash-sale-cluster
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9094 --list"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
