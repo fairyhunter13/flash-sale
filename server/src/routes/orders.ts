@@ -24,9 +24,9 @@ export function registerOrderRoute(app: FastifyInstance, pool: Pool): void {
     try {
       return await readHeld(pool, userId)
     } catch {
-      // 503 and never 200 with held false. "No row" and "cannot read" are
-      // different answers, and a buyer who holds a unit must never be told
-      // that they hold nothing.
+      // 503, never 200 with held false. "No row" and "cannot read" are
+      // different answers. A buyer who holds a unit must never be told they
+      // hold nothing.
       return reply.code(503).send({ error: 'the purchase state cannot be read' })
     }
   })

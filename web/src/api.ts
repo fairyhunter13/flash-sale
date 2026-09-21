@@ -13,8 +13,8 @@ export type Outcome = 'won' | 'already-bought' | 'sold-out' | 'not-open' | 'over
 export type Held = { readonly held: true; readonly at: string } | { readonly held: false } | 'unknown'
 
 /**
- * Everything the page needs from the server. App takes it as a prop. A test
- * passes a plain object and never patches `fetch` onto the global scope.
+ * App takes this as a prop, so a test passes a plain object and never patches
+ * `fetch` onto the global scope.
  */
 export type Api = {
   /** Pushes each sale state. Returns the function that closes the stream. */
@@ -44,8 +44,8 @@ export const http: Api = {
 
   async readHeld(userId) {
     const answer = await fetch(`/api/purchase/${encodeURIComponent(userId)}`)
-    // 503 means the record cannot be read. Telling the buyer they hold nothing
-    // would be a different answer, and a wrong one.
+    // 503 means the record cannot be read. I will not tell the buyer they hold
+    // nothing. That is a different answer, and a wrong one.
     if (!answer.ok) return 'unknown'
     return (await answer.json()) as Held
   },

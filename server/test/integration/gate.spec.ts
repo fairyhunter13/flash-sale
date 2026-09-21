@@ -103,8 +103,7 @@ describe('the gate', () => {
     expect(await gate.offsetOf(TOPIC, 0)).toBe(0)
   })
 
-  // Four workers, each one reading its own partition in order. That is what
-  // Kafka gives: order inside a partition, and no order across them.
+  // Kafka orders inside a partition, never across. That is why each worker owns one.
   it('four partitions at once take exactly the stock', async () => {
     await openSale(40)
     const partitions = 4

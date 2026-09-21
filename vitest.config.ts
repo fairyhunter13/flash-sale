@@ -34,7 +34,7 @@ export default defineConfig({
           root: './web',
           environment: 'happy-dom',
           include: ['test/unit/**/*.spec.tsx'],
-          setupFiles: ['./test/setup.ts'],
+          setupFiles: ['./test/setup/dom.ts'],
         },
       },
       {
@@ -44,7 +44,7 @@ export default defineConfig({
           root: './web',
           environment: 'happy-dom',
           include: ['test/integration/**/*.spec.tsx'],
-          setupFiles: ['./test/setup.ts'],
+          setupFiles: ['./test/setup/dom.ts'],
         },
       },
     ],

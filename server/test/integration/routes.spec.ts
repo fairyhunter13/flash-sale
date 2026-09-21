@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, i
 import type { Config } from '../../src/config.ts'
 import { Gate } from '../../src/gate/gate.ts'
 import type { Pipeline } from '../../src/queue/pipeline.ts'
-import { registerRoutes } from '../../src/routes/index.ts'
+import { registerRoutes } from '../../src/routes/sale.ts'
 import { buildApp, type App } from '../../src/server.ts'
 
 const START = Date.parse('2026-06-01T00:00:00Z')
@@ -24,8 +24,7 @@ function config(): Config {
 }
 
 /**
- * A store that answers nothing. The routes must report a fault, and never a
- * sold-out sale.
+ * An empty store is a fault, not a sold-out sale. The routes must say so.
  */
 const deadPipeline = {
   left: async () => {
@@ -158,8 +157,7 @@ describe('the routes', () => {
   })
 
   it('a dead database gives 500 and no outcome', async () => {
-    // Port 1 answers nothing. The routes hold a real Gate over a pool that
-    // cannot reach a server.
+    // Port 1 answers nothing. The routes hold a real Gate over a pool that cannot reach a server.
     const dead = new Pool({
       connectionString: 'postgres://flash:flash@127.0.0.1:1/flash',
       connectionTimeoutMillis: 250,

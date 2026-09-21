@@ -30,16 +30,16 @@ const READ_SALE = 'SELECT units_left, start_at, end_at FROM stock WHERE id = 1'
 
 const READ_CAMPAIGN = 'SELECT total_units, start_at, end_at FROM stock WHERE id = 1'
 
-// The insert makes every transaction take the same lock in the same order.
-// Without it, Postgres reported `deadlock detected` at 100 parallel records.
+// I insert first so every transaction takes the same lock in the same order.
+// Without it, Postgres hit `deadlock detected` at 100 parallel records.
 const CLAIM_OFFSET = `INSERT INTO queue_offsets (topic, partition, next_offset) VALUES ($1, $2, 0)
    ON CONFLICT (topic, partition) DO NOTHING`
 
 const READ_OFFSET =
   'SELECT next_offset FROM queue_offsets WHERE topic = $1 AND partition = $2 FOR UPDATE'
 
-// A rebalance can give two workers one partition for a moment. GREATEST
-// keeps the later record from pulling the resume point backwards.
+// A rebalance can give two workers one partition for a moment. I use GREATEST
+// to keep the later record from pulling the resume point backwards.
 const BUMP_OFFSET = `INSERT INTO queue_offsets (topic, partition, next_offset) VALUES ($1, $2, $3)
    ON CONFLICT (topic, partition)
    DO UPDATE SET next_offset = GREATEST(queue_offsets.next_offset, EXCLUDED.next_offset)`
@@ -47,8 +47,8 @@ const BUMP_OFFSET = `INSERT INTO queue_offsets (topic, partition, next_offset) V
 const TAKE_BUYER =
   'INSERT INTO orders (user_id, seq) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING RETURNING user_id'
 
-// `units_left > 0` stops the oversell. Postgres holds the one stock row for the
-// transaction. A second worker reads the count only after the first commits.
+// Postgres holds the one stock row for the transaction. A second worker reads the
+// count only after the first commits. The `units_left > 0` check cannot oversell.
 const TAKE_UNIT =
   'UPDATE stock SET units_left = units_left - 1 WHERE id = 1 AND units_left > 0 RETURNING units_left'
 
@@ -58,13 +58,12 @@ type CampaignRow = { total_units: number; start_at: Date; end_at: Date }
 const MISSING = 'the stock row is missing. Run npm run db:migrate.'
 
 /**
- * The database side of the sale. Redis decides who wins, so this class never
- * answers a buyer. It answers one question: what the database does with one
- * record from the queue.
+ * Redis decides who wins. So this class never answers a buyer. It says what
+ * the database does with one record from the queue.
  *
  * Kafka's exactly-once stops at the broker. The offset cannot live there.
- * `record` writes the order, the unit and the offset in one transaction.
- * The unique `user_id` refuses a repeat, and the offset is only a resume point.
+ * `record` writes it with the order in one transaction. The unique `user_id`
+ * refuses a repeat. The offset is only a resume point.
  */
 export class Gate {
   private readonly pool: Pool
@@ -78,8 +77,8 @@ export class Gate {
   }
 
   /**
-   * The total is a column, and never `units_left`. A restart mid-sale reads a
-   * count that is already down, and Redis needs the total it started with.
+   * I keep the total in its own column, never `units_left`. A restart mid-sale reads a count
+   * already down, and Redis needs the total it started with.
    */
   async campaign(): Promise<SaleNumbers> {
     const { rows } = await this.pool.query<CampaignRow>(READ_CAMPAIGN)
@@ -113,8 +112,7 @@ export class Gate {
 
       const unit = await client.query<{ units_left: number }>(TAKE_UNIT)
       if (unit.rowCount === 0) {
-        // The bump runs on this client, never a second one from the pool.
-        // Every client waits on this same path. A second one starves.
+        // I keep the bump on one client. A second waits on this path and starves.
         await client.query('ROLLBACK')
         await client.query(BUMP_OFFSET, ahead)
         return 'no-unit-left'
@@ -154,8 +152,8 @@ export class Gate {
   }
 
   /**
-   * How far the workers read one partition, and 0 where none read it. Because
-   * one transaction wrote this row and the order row, a new owner seeks here.
+   * 0 where no worker read the partition. One transaction wrote this row and the
+   * order row. A new owner seeks here.
    */
   async offsetOf(topic: string, partition: number): Promise<number> {
     const { rows } = await this.pool.query<{ next_offset: string }>(

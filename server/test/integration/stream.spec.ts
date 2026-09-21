@@ -85,9 +85,9 @@ describe('the stream', () => {
 
     await app.pipeline.reserve('buyer-a', START + 60_000)
 
-    // A tick can fire between the first read and the purchase. The next
-    // block is not always the changed one. The test reads until the count
-    // moves, and it fails on the limit rather than on the first block.
+    // A tick can fire between the first read and the purchase. The next block
+    // is not always the changed one. I read until the count moves, and fail
+    // on the limit.
     const second = await eventWhere(events, (one) => one.stockLeft === 4)
     expect(second).toMatchObject({ state: 'open', stockLeft: 4 })
 

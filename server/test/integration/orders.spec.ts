@@ -2,7 +2,7 @@ import Fastify from 'fastify'
 import { Pool } from 'pg'
 import { poolFor } from '../setup/db.ts'
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
-import { registerOrderRoute } from '../../src/orders.ts'
+import { registerOrderRoute } from '../../src/routes/orders.ts'
 
 let pool: Pool
 let app: ReturnType<typeof Fastify>

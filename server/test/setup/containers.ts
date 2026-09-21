@@ -12,14 +12,12 @@ declare module 'vitest' {
 }
 
 /**
- * The broker tells a client its own address, from `advertised.listeners`. That
- * address must be right at start. The port cannot be a random one.
+ * The broker advertises this address from `advertised.listeners`. The port cannot be random.
  */
 const KAFKA_HOST_PORT = 19_092
 
 /**
- * One Postgres, one Redis and one Kafka for the whole run.
- * `npm test` is the whole command. The three start together. Kafka takes about 20 seconds.
+ * One Postgres, one Redis and one Kafka, shared across the whole run. Kafka takes about 20 seconds.
  */
 export default async function setup(project: TestProject) {
   const [postgres, redis, kafka] = await Promise.all([
@@ -29,8 +27,8 @@ export default async function setup(project: TestProject) {
       .withPassword('flash')
       .start(),
     new RedisContainer('redis:7-alpine').start(),
-    // The same image and the same KRaft settings as docker-compose.yml.
-    // Tests and the running server meet one broker version.
+    // Same image and KRaft settings as docker-compose.yml.
+    // Tests and the running server then use one broker version.
     new GenericContainer('apache/kafka:4.0.0')
       .withExposedPorts({ container: 9092, host: KAFKA_HOST_PORT })
       .withEnvironment({

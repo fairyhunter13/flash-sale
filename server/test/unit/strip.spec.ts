@@ -14,10 +14,9 @@ function everySourceFile(directory: string): string[] {
 }
 
 /**
- * `npm start` runs `node --experimental-strip-types`, which deletes types and
- * rewrites nothing. So a constructor parameter property, an enum or a
- * namespace is a SyntaxError at boot, and no other test finds it: Vitest
- * compiles the TypeScript rather than stripping it.
+ * `npm start` runs `node --experimental-strip-types`, which strips types and rewrites nothing. A
+ * constructor parameter property, an enum or a namespace is then a SyntaxError at boot. No other
+ * test finds it: Vitest compiles the TypeScript, and does not strip it.
  */
 describe('the source runs under node', () => {
   it('every server source file strips cleanly', () => {

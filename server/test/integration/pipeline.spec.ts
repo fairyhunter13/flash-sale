@@ -72,7 +72,7 @@ describe('the pipeline', () => {
     const again = await pipeline.reserve('loser', DURING)
 
     expect(lost).toBe('sold-out')
-    // Never already-bought. That buyer holds no order row. The answer would
+    // Never already-bought. That buyer holds no order row, and the answer would
     // name a purchase that does not exist.
     expect(again).toBe('sold-out')
   })
@@ -105,7 +105,7 @@ describe('the pipeline', () => {
     )
 
     // SADD returns 1 to one caller and 0 to the other 49, so only one call
-    // ever reaches INCR. No MULTI/EXEC is needed.
+    // ever reaches INCR. I skip MULTI/EXEC.
     expect(answers.filter((one) => one === 'won')).toHaveLength(1)
     expect(answers.filter((one) => one === 'already-bought')).toHaveLength(49)
     expect(await pipeline.left()).toBe(9)
@@ -130,8 +130,8 @@ describe('the pipeline', () => {
     const rebuilt = await pipeline.rehydrate()
 
     expect(rebuilt.buyers).toBe(3)
-    // The count comes from max(seq), never from the row count. The next
-    // buyer takes place 4 and not a place someone already holds.
+    // The count comes from max(seq). A row count would hand the next buyer a
+    // place someone already holds.
     expect(rebuilt.highestSeq).toBe(3)
     expect(await pipeline.left()).toBe(7)
     expect(await pipeline.reserve('d', DURING)).toBe('won')

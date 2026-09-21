@@ -4,8 +4,8 @@ import pLimit from 'p-limit'
 import { createClient } from 'redis'
 import { Agent, request } from 'undici'
 
-// The root .env holds the ports this box uses, and nothing else loads it for a
-// plain `node` run. loadEnvFile never overwrites a variable already set.
+// Nothing else loads the root .env for a plain `node` run, and it holds this box's ports.
+// loadEnvFile never overwrites a variable already set.
 const ENV_FILE = new URL('../.env', import.meta.url)
 if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE)
 
@@ -24,8 +24,8 @@ const CACHE_MS = 250
 
 /**
  * The reset below empties the sale and the orders table, so this file must
- * never reach a shared host. A hostname outside the list is refused. The
- * operator can widen it with STRESS_ALLOW_HOST.
+ * never reach a shared host. A hostname outside the list is refused, and
+ * STRESS_ALLOW_HOST widens it.
  */
 const LOCAL = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
 
@@ -42,10 +42,8 @@ function assertLocal(name: string, url: string): void {
 type Tally = Record<string, number>
 
 /**
- * Puts every unit back, in both stores. The count returns to `total_units`, so
- * this file holds no number of its own. Redis holds the live count. A reset of
- * Postgres alone leaves the sale sold out. `queue_offsets` stays. Otherwise a
- * worker that lost its row would seek to 0 and replay the previous run.
+ * Redis holds the live count. A reset of Postgres alone leaves the sale sold out.
+ * I leave `queue_offsets`. A worker that lost its row would seek to 0 and replay the previous run.
  */
 async function reset(pool: Pool, redis: RedisLike): Promise<number> {
   await pool.query('TRUNCATE orders')
@@ -63,10 +61,9 @@ async function reset(pool: Pool, redis: RedisLike): Promise<number> {
 type RedisLike = { del: (keys: string[]) => Promise<number>; quit: () => Promise<unknown> }
 
 /**
- * Waits until the order rows stop arriving. Redis answers `won` before the
- * row lands. So a count read at the end of the drive is short. The wait ends
- * on the wanted count, or on 10 quiet seconds. 10 and not 2: a 2.9 second fetch
- * pause made one run report 760 of 1,000 rows that all landed a moment later.
+ * Redis answers `won` before the row lands. A count read at the end of the drive is short.
+ * I wait for the wanted count, or 10 quiet seconds. 10 and not 2: a 2.9 second fetch pause
+ * made one run report 760 of 1,000 rows that all landed a moment later.
  */
 async function drain(pool: Pool, wanted: number): Promise<{ rows: number; ms: number }> {
   const startedAt = performance.now()

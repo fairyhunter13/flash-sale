@@ -28,8 +28,8 @@ export function migrations(): readonly Migration[] {
 }
 
 /**
- * Each file commits with its own ledger row. A failed file leaves no
- * half-applied schema. Never edit an applied file. A change is a new file.
+ * I commit each file with its own ledger row. A failed file leaves no half-applied schema.
+ * Never edit an applied file. A change is a new file.
  */
 export async function migrate(pool: Pool): Promise<readonly string[]> {
   const client: PoolClient = await pool.connect()

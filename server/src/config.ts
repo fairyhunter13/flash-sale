@@ -1,7 +1,6 @@
 /**
- * The addresses and the sizes, and never the sale itself. The unit count and
- * the window are rows, written by `server/sql/migrations/0002_campaign.sql`,
- * so one fact lives in one place.
+ * The addresses and the sizes, never the sale. The count and the window are rows in
+ * `server/sql/migrations/0002_campaign.sql`, so one fact lives in one place.
  */
 export type Config = {
   readonly databaseUrl: string
@@ -28,7 +27,7 @@ export class ConfigError extends Error {
 
 type Env = Record<string, string | undefined>
 
-// Every problem is collected. Otherwise the reader restarts once
+// I collect every problem first. Otherwise the reader restarts once
 // for each missing variable.
 class Reader {
   readonly problems: string[] = []

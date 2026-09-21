@@ -53,8 +53,7 @@ export function App({ api }: { api: Api }): React.ReactElement {
     )
   }, [api])
 
-  // The buyer who reloaded the page asks the record what they hold. A refresh
-  // must not lose the result of an attempt that already succeeded.
+  // A refresh must not lose the result of an attempt that already succeeded.
   useEffect(() => {
     const stored = readStoredBuyerId()
     if (stored === '') return

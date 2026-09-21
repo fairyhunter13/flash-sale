@@ -1,13 +1,13 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import type { Gate } from '../gate/gate.ts'
 import type { Pipeline } from '../queue/pipeline.ts'
-import { readSale } from './index.ts'
+import { readSale } from './sale.ts'
 
 export const TICK_MS = 250
 
 /**
- * One timer for the process, never one per page, so 5,000 open pages cost the
- * same 4 reads a second as one. A tick writes only when the text changed.
+ * I run one timer for the process, never one per page. 5,000 open pages then cost the same 4
+ * reads a second as one. A tick writes only when the text changed.
  */
 export class SaleTicker {
   private readonly clients = new Set<FastifyReply>()
@@ -52,8 +52,7 @@ export class SaleTicker {
     if (this.timer === undefined) return
     clearInterval(this.timer)
     this.timer = undefined
-    // The next page to connect must see the state at once. The timer drops
-    // the memory of the last body.
+    // I forget the last body here. The next page to connect then gets the state at once.
     this.last = ''
   }
 
@@ -67,8 +66,8 @@ export class SaleTicker {
     try {
       body = JSON.stringify(await readSale(this.gate, this.pipeline))
     } catch {
-      // A store stopped answering. An open stream would show a stale count as
-      // a live one. So every page is closed.
+      // A store can stop answering. An open stream would read a stale count as
+      // a live one. So I close every page.
       this.closeAll()
       return
     }
@@ -85,7 +84,7 @@ function write(reply: FastifyReply, body: string): void {
 export function registerStream(app: FastifyInstance, ticker: SaleTicker): void {
   app.get('/api/sale/stream', async (request, reply) => {
     // hijack hands the socket to this handler. Fastify never ends the
-    // response, and the connection stays open for the life of the page.
+    // response, so the connection stays open for the life of the page.
     reply.hijack()
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',

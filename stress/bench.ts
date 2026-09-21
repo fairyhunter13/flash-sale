@@ -14,8 +14,8 @@ const SECONDS = Number(process.env['BENCH_SECONDS'] ?? 10)
 const CACHE_MS = 250
 
 /**
- * Puts every unit back. Without it a sold-out sale answers every POST
- * from the cached read. The number below would measure the fast path.
+ * Without it a sold-out sale answers every POST from the cached read.
+ * The number below would measure the fast path.
  */
 async function openTheSale(): Promise<void> {
   const pool = new Pool({ connectionString: DATABASE_URL, application_name: 'bench' })
@@ -30,9 +30,9 @@ async function openTheSale(): Promise<void> {
 }
 
 /**
- * Throughput only, and never the counts. autocannon reads `amount` as a
- * per-connection quota. It sent 999,969 for a requested 1,000,000 with no
- * error (issue #228). run.ts owns every count. This file owns the latency.
+ * Throughput and latency. autocannon reads `amount` as a per-connection
+ * quota. It sent 999,969 for a requested 1,000,000 with no error (issue
+ * #228). run.ts owns the counts.
  */
 async function measure(name: string, options: autocannon.Options): Promise<Result> {
   console.log(`\n${name}`)
@@ -49,9 +49,8 @@ async function main(): Promise<void> {
 
   await measure('GET /api/sale', { url: `${BASE_URL}/api/sale` })
 
-  // One buyer id for every request. The first one wins, and the rest read
-  // already-bought, so each request opens a transaction and runs 2 statements
-  // in it. The transaction is the slow path. It is worth a number.
+  // Every request hits the same buyer id. The first wins, the rest read
+  // already-bought. The transaction is the slow path here, worth a number.
   await measure('POST /api/purchase (one repeat buyer)', {
     url: `${BASE_URL}/api/purchase`,
     method: 'POST',

@@ -2,8 +2,7 @@
 
 ## How to read a row
 
-Every row carries an identifier. A test case is `T-01`, a scenario is `S-01`, and a user journey is
-`J-01`. The numbers only go up, and a row that is dropped keeps its number.
+Every row carries an identifier. I number a test case `T-01`, a scenario `S-01`, and a user journey `J-01`. The numbers only go up. A dropped row keeps the number it was born with.
 
 **Tier** says how much of the real system the test uses.
 
@@ -13,40 +12,40 @@ Every row carries an identifier. A test case is `T-01`, a scenario is `S-01`, an
 
 **Covers** names a development task, from `D-01` to `D-16`. The task table is in [`docs/development-plan.md`](development-plan.md#task-table).
 
-**Status** is one of planned, in-progress, done, blocked or dropped. A blocked row names the behavior that was seen, and a dropped row gives one line of reason.
+**Status** is one of planned, in-progress, done, blocked or dropped. A blocked row names the behavior I saw, and a dropped row gets one line to say why.
 
-**Risk** is the likelihood times the impact. Each one runs from 1 to 5, so risk runs from 1 to 25. A score of 1 to 6 is low. A score of 7 to 14 is medium. A score of 15 to 25 is high. A high risk earns a user journey as well as a test case.
+**Risk** is the likelihood times the impact. Each one runs from 1 to 5, and risk runs from 1 to 25. A score of 1 to 6 is low, and a score of 7 to 14 is medium. A score of 15 to 25 is high, and a high risk earns a user journey as well as a test case.
 
 ## Scope
 
-Every test tier except `unit` runs against real services: a real Redis 7, a real Kafka 4 and a real Postgres 16, all started by Testcontainers inside the test run. The runner is vitest.
+Every tier except `unit` talks to real services. I run a real Redis 7, a real Kafka 4 and a real Postgres 16, and Testcontainers starts all three inside the test run. The runner is vitest.
 
-Under test: the Redis pipeline, the four routes, the Kafka workers, the page and the stress run.
+I tested the Redis pipeline, the four routes, the Kafka workers, the page and the stress run.
 
-The tier decides the folder: a `unit` case lives in `server/test/unit/` and `web/test/unit/`. `npm run test:unit` runs those 23 while Docker is stopped.
+The tier decides the folder, and a `unit` case lives in `server/test/unit/` and `web/test/unit/`. `npm run test:unit` runs those 23 while Docker is stopped.
 
 A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 43. `npm test` runs all 66.
 
-Four things are excluded.
+I left four things out.
 
-- No deployment test exists, and nothing is deployed.
-- The person types a buyer identifier, and the system trusts it. The README names that unstated trust as a hole.
-- The sale records a win but takes no money. No payment path exists to test.
-- Tests use the React testing library. They have no browser matrix.
+- Nothing is deployed, and I wrote no deployment test.
+- The user types a buyer identifier and I trust it, but the README names that trust as a hole.
+- The sale records a win but takes no money. I built no payment path, and there is nothing to test yet.
+- The tests use the React testing library, but I ran no browser matrix.
 
 ## Scenarios
 
 S-01 Two buyers reach for the last unit.
 Precondition: the sale is open and 1 unit is left.
 Action: two different buyers send a purchase at the same time.
-Expected result: one answer is `won`. The other answer is `sold-out`.
-Postcondition: the count is 0 and does not go below it. Exactly 1 new record is on the topic.
+Expected result: one answer is `won`. The other is `sold-out`.
+Postcondition: the count is 0 and never drops below it. Exactly 1 new record lands on the topic.
 
-S-02 The same buyer attempts twice.
+S-02 The same buyer buys twice.
 Precondition: the sale is open, units are left, and buyer A holds a unit.
 Action: buyer A sends a second purchase.
-Expected result: the answer is `already-bought`. The server does not return `sold-out` for a repeat buyer.
-Postcondition: the count does not change. No new record is on the topic.
+Expected result: I return `already-bought`. A buyer who already won is not competing for a leftover unit, and the server still does not return `sold-out` for a repeat buyer.
+Postcondition: the count does not change, and no new record lands on the topic.
 
 S-03 An attempt before the sale opens.
 Precondition: the clock is before the start time.
@@ -72,17 +71,17 @@ Action: buyer A reads their own purchase state.
 Expected result: `held` is true.
 Postcondition: the count stays the same. No second unit is taken.
 
-S-07 The sale state is read.
+S-07 Read the sale state.
 Precondition: the sale is open with units left.
 Action: a caller reads the sale.
 Expected result: `state` is `open`, and `stockLeft` is the real count.
-Postcondition: reading the sale takes no unit.
+Postcondition: a read takes no unit.
 
 S-08 A win becomes an order row.
 Precondition: the `sale.wins` topic holds one record, and a worker runs.
 Action: the worker reads the record.
 Expected result: the worker inserts one row for that buyer.
-Postcondition: one transaction writes the order row, the unit and the offset together.
+Postcondition: I write the order row, the unit and the offset in one transaction.
 
 S-09 A worker restarts with wins unread.
 Precondition: 50 records are on the topic, and the worker is stopped.
@@ -106,12 +105,12 @@ S-12 The page names each outcome.
 Precondition: the page is open, and the server answers a known outcome.
 Action: the person types a buyer identifier and presses the button.
 Expected result: the page shows one sentence for that outcome. The five sentences differ from each other.
-Postcondition: the page keeps the outcome until the person attempts again.
+Postcondition: the page holds that outcome until the person tries again.
 
 S-13 The page shows the state of the sale.
 Precondition: the sale is not open yet, and the page is loaded.
 Action: the person reads the page before any attempt.
-Expected result: the page names the state and the units left. The page refuses the button while the state is not `open`.
+Expected result: the page names the state and the units left. It refuses the button while the state is not `open`.
 Postcondition: a page load takes no unit.
 
 S-14 Postgres does not answer.
@@ -126,14 +125,14 @@ Action: the sale start time passes.
 Expected result: the page shows `open` with no reload.
 Postcondition: the server holds no connection for the page, and the page closes its stream when the component unmounts.
 
-S-16 The server restarts during a live sale.
+S-16 The server restarts in the middle of a live sale.
 Precondition: the sale is open, and some units are already sold.
 Action: the server boots again.
 Expected result: Redis keeps the sold-unit count. The boot rebuilds nothing.
-Postcondition: a unit already sold stays sold.
+Postcondition: a unit that was already sold stays sold.
 
 S-17 Redis is lost while Postgres survives.
-Precondition: Postgres holds the order rows, and Redis holds no counter. Redis answers that way after a restart with no saved data. It also answers that way after a replica is promoted.
+Precondition: Postgres holds the order rows, and Redis holds no counter. Redis comes back empty after a restart with no saved data. A promoted replica comes back empty the same way.
 Action: the server boots.
 Expected result: the server rebuilds the counter and the buyer set from the order rows.
 Postcondition: the next buyer gets the next place. No unit goes to two buyers.
@@ -141,7 +140,7 @@ Postcondition: the next buyer gets the next place. No unit goes to two buyers.
 S-18 The reviewer starts the server with no build step.
 Precondition: a fresh clone, and `npm install` ran.
 Action: the reviewer runs `npm start`.
-Expected result: the server listens and answers. `node --experimental-strip-types` removes type annotations from the code and changes nothing else. A constructor parameter property, an enum or a namespace is a SyntaxError.
+Expected result: the server listens and answers. `node --experimental-strip-types` strips the type annotations and touches nothing else. So a constructor parameter property, an enum or a namespace is a SyntaxError.
 Postcondition: no source file holds syntax that strip-only mode refuses.
 
 ## Cases
@@ -196,32 +195,32 @@ Postcondition: no source file holds syntax that strip-only mode refuses.
 
 ## User journeys
 
-J-01, a buyer wins. The buyer opens the page before the sale, and it shows `pending`. When the sale opens, the page shows `open` without a reload. The buyer types an identifier and presses the button, and the page then confirms that the unit is theirs.
+J-01, a buyer wins. Before the sale, a buyer opens the page and it shows `pending`. The sale opens, and the page flips to `open` with no reload. The buyer types an identifier and presses the button, and the page confirms the unit is theirs.
 
-Acceptance: the order table holds that buyer. A reload shows the same answer, read from the record.
+Acceptance: the order table holds that buyer. Reload it and you get the same answer, straight from the record.
 
-J-02: A buyer loses a sale when stock is 1 and another buyer already took it, and the buyer tries to buy but the page says sold out. Acceptance: the page tells "sold out" apart from "already bought" and shows the buyer which one applies.
+J-02: A buyer loses a sale. Stock is 1, another buyer already took it, and now this buyer tries to buy and lands on a sold-out page. The trouble is the page cannot say whether the buyer lost the race or already won it. Acceptance: the page tells "sold out" apart from "already bought", and it shows the buyer which one applies.
 
-J-03, the stress run: `docker compose up -d`, then `npm run stress`. Acceptance: the run prints the three counts and the command that produced them.
+J-03, the stress run: `docker compose up -d`, then `npm run stress`. I count it as passing when the run prints the three counts and the command that produced them.
 
 J-04, a reviewer clones the repository, runs `npm install` and `npm test`, and reads the README.
 
-Acceptance: every command appears in the README, and the test run starts its own Redis and Postgres. The diagram renders on the GitHub page.
+Acceptance: I ship it when three things hold. Every command is in the README, and the test run starts its own Redis and Postgres. The diagram renders on the GitHub page.
 
 ## Experience bar
 
-- A refusal and a fault look different. `sold-out` means the sale ran out. A Redis failure is a 500, and the page says something went wrong.
-- An error names the valid set. A bad `userId` gets an answer that says what a `userId` must be.
+- A refusal and a fault look different, and I kept them apart on purpose. `sold-out` means the sale ran out. A Redis failure is a 500, and the page tells the buyer something broke.
+- Every error names the valid set. Send a bad `userId` and the answer tells you what a `userId` must be.
 - No answer is silently empty. `GET /api/purchase/:userId` for a buyer who never bought answers `held: false`. A Postgres read failure answers 503.
 
 ## Fixtures
 
-`redis:7` and `postgres:16` are real containers. Testcontainers starts them in `server/test/setup/containers.ts` for every `engine` run, each on its own port. The same two images run under `docker-compose.yml` for the app and the stress run. `stress/run.ts` generates the 10,000 buyer identifiers, and they are unique by construction. No `engine` row uses a mock for Redis or Postgres, and T-12 and T-24 each simulate a dead engine by closing the real connection.
+`redis:7` and `postgres:16` are real containers, and Testcontainers starts them in `server/test/setup/containers.ts` for every `engine` run, each on its own port. The same two images run under `docker-compose.yml` for the app and the stress run. `stress/run.ts` generates the 10,000 buyer identifiers, and they are unique by construction. I never mock Redis or Postgres in an `engine` row. T-12 and T-24 each simulate a dead engine when they close the real connection.
 
 ## Traceability
 
 Three checks, each one command.
 
-1. Run `npx vitest list --json=/tmp/nodes.json`. The output must contain every claimed node ID in this file. `vitest list` ignores `--reporter`. Only the `--json=<path>` form writes anything. A row that names a test the runner does not collect proves nothing.
-2. Every `T-nn` names at least one `D-nn`. Every `D-nn` is named by at least one `T-nn`. An `awk` pass over both documents checks this.
-3. The map must agree. A build of the map over this root reports 60 open gaps, and all 60 are named. Of the 60, 56 are parts that the builder derived from the code and that no sentence gives a reason for. The other 4 are qualities that conceptor cannot yet grade. T-20, T-43, T-44 and T-45 cover the part that a check can read. They run in the suite with no Python and no conceptor install.
+1. Run `npx vitest list --json=/tmp/nodes.json`. The output has to contain every node ID this file claims. `vitest list` ignores `--reporter`, and only the `--json=<path>` form writes anything to disk. A row that names a test the runner never collects proves nothing.
+2. Every `T-nn` names at least one `D-nn`. Every `D-nn` gets named by at least one `T-nn`. I check both directions with an `awk` pass over the two documents.
+3. The map has to agree. When I build the map over this root, it reports 60 open gaps, and I name all 60. Of those, 56 are parts the builder derived from the code, and no sentence gives them a reason. The other 4 are qualities that conceptor cannot grade yet. T-20, T-43, T-44 and T-45 cover the part a check can read. They run in the suite without Python and without a conceptor install.

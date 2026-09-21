@@ -18,9 +18,8 @@ export type PipelineOptions = {
   readonly sale: SaleNumbers
   readonly gate: Gate
   /**
-   * A suffix on the Redis keys, the topic and the group. A test sets it, so two
-   * test files that share one Redis never read each other's sale. A second
-   * campaign would use the same field. See `docs/design-experiments.md`.
+   * A test sets it, so two test files that share one Redis never read each other's sale.
+   * A second campaign would use the same field. See `docs/design-experiments.md`.
    */
   readonly namespace?: string
 }
@@ -37,13 +36,9 @@ export type PipelineCounts = {
 }
 
 /**
- * The decision path. Redis answers the buyer, Kafka carries the win, and
- * `Gate.record` writes it down. The three stores never write each other, so
- * each one fails on its own.
- *
- * Kafka keeps order inside one partition only. Several workers write at
- * once. The number `INCR` returns travels in the record into `orders.seq`.
- * `ORDER BY seq` reads the arrival order, not the insertion order.
+ * Kafka keeps order inside one partition only, and several workers write at once.
+ * So I carry the number `INCR` returns into `orders.seq`. `ORDER BY seq` reads
+ * arrival order, not insertion order.
  */
 export class Pipeline {
   private readonly redis: RedisClientType
@@ -110,11 +105,8 @@ export class Pipeline {
   }
 
   /**
-   * Answers one buyer, and never touches Postgres.
-   *
-   * The `GET` is a fast path and never the decision. `sale:sold` only goes up,
-   * so a buyer refused there writes nothing. `INCR` past the stock is what
-   * refuses a buyer. A stale read costs one call and never a wrong answer.
+   * The `GET` is a fast path, never the decision. `INCR` past the stock refuses the buyer.
+   * `sale:sold` only goes up. A stale `GET` costs one call and never a wrong answer.
    */
   async reserve(buyerId: string, nowMs: number = Date.now()): Promise<Outcome> {
     const state = saleState(nowMs, 1, this.window)
@@ -132,8 +124,8 @@ export class Pipeline {
 
     const seq = await this.redis.incr(this.soldKey)
     if (seq > this.stock) {
-      // Left in the set, this buyer would read `already-bought` on a retry for
-      // a unit they never won, and the set would grow with the traffic.
+      // Left in, this buyer reads `already-bought` on a retry for a unit they
+      // never won, and the set grows with the traffic.
       await this.redis.sRem(this.buyersKey, buyerId)
       this.counts.losersRemoved += 1
       return 'sold-out'
@@ -161,8 +153,8 @@ export class Pipeline {
   async drained(limitMs = 30_000): Promise<boolean> {
     const until = Date.now() + limitMs
     while (Date.now() < until) {
-      // A replay and a duplicate buyer are one record twice, so neither counts.
-      // Counted, the check returned true at 49 of 50 rows on a 4-worker run.
+      // A replay and a duplicate buyer are the same record twice. Neither counts.
+      // I counted them once, and the check went true at 49 of 50 rows on a 4-worker run.
       const done = this.counts.written + this.counts.refusedByDatabase
       if (done >= this.counts.produced) return true
       await new Promise((ready) => setTimeout(ready, 25))
@@ -171,10 +163,9 @@ export class Pipeline {
   }
 
   /**
-   * Rebuilds the hot state from the database. The counter comes from
-   * `max(seq)`, never the row count, because a count would hand the next buyer
-   * a place an earlier buyer holds. A win still in Kafka has no order row.
-   * The rebuild is exact only after the queue drains.
+   * I use `max(seq)` for the counter, not the row count. A count hands the next buyer a place
+   * someone already holds. A win still in Kafka has no order row. The rebuild is exact only after
+   * the queue drains.
    */
   async rehydrate(): Promise<{ buyers: number; highestSeq: number; ms: number }> {
     const startedAt = Date.now()
@@ -194,8 +185,8 @@ export class Pipeline {
   }
 
   /**
-   * No counter in Redis means Redis was lost, so rebuild. A counter is left
-   * alone. A live Redis runs ahead of Postgres by what the queue holds.
+   * No counter in Redis means Redis was lost. Rebuild only then.
+   * A live Redis runs ahead of Postgres by what the queue holds.
    */
   private async restoreIfEmpty(): Promise<void> {
     if ((await this.redis.exists(this.soldKey)) === 1) return
@@ -206,9 +197,8 @@ export class Pipeline {
   }
 
   /**
-   * One consumer, with Postgres as the only offset store. `autoCommit` is off.
-   * Kafka commits on a timer, so a dead worker can leave an offset past a row
-   * it never wrote. Measured on this design, 201 of 1,000 rows never landed.
+   * `autoCommit` is off because Kafka commits on a timer. A dead worker then
+   * leaves an offset past a row it never wrote. I lost 201 of 1,000 rows that way.
    */
   private async startWorker(): Promise<void> {
     const consumer = this.kafka.consumer({
