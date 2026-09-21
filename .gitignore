@@ -16,7 +16,10 @@ scripts/
 # answer to "why not one store", so it ships. The rule is docs/* and not docs/,
 # because git cannot re-include a file inside a directory it already excluded.
 docs/*
+!docs/decisions.md
 !docs/design-experiments.md
+!docs/development-plan.md
+!docs/test-plan.md
 
 # The browser tests and the diagram renderer. Both pull a large toolchain that a
 # reader does not need to install. The diagram they produce IS committed, under
