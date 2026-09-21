@@ -114,9 +114,15 @@ the clock closes the window. A count that closes the sale breaks on the next era
 rebuild finds 0 sold, and it reopens a sale that already ended.
 
 The proof is a load run and not a unit test alone. `npm run stress` sends 10,000 buyers at 1,000
-units, moves the end time into the past, then reads Redis until it empties. Over 12 runs the peak
-was 48,416 bytes over 5 keys every time. The drop landed 53 ms to 359 ms after the close, and
-Postgres held all 1,000 rows.
+units, moves the end time into the past, then reads Redis until it empties. The suite passed 26
+runs, and each one left 1,000 rows in Postgres. The drop landed 53 ms to 409 ms after the close.
+
+The run samples Redis once the queue drains, and that number is not the high-water mark. Of the 26,
+24 read 48,416 bytes over the 5 keys and 2 read 52,512. The `sale:buyers` hash table grows in one
+jump of 4,096 bytes. A probe that samples every 50 ms through the sale reads about twice as
+much: 99,320 to 104,520 bytes over 6 runs. The difference is `sale:issued` at 44,784 bytes and
+`sale:outbox` at 7,224, which hold the wins Postgres has not committed. Both empty as the workers
+catch up, so the sale gives that half back before the window even closes.
 
 The spread is the wait for the next sweep. I measured that wait on its own 30 times, from a random
 point inside the 250 ms period. It read 26 ms to 255 ms, and the mean was 143 ms. So the delay is
