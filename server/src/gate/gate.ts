@@ -39,8 +39,8 @@ const CLAIM_OFFSET = `INSERT INTO queue_offsets (topic, partition, next_offset) 
 const READ_OFFSET =
   'SELECT next_offset FROM queue_offsets WHERE topic = $1 AND partition = $2 FOR UPDATE'
 
-// A rebalance can give two workers one partition for a moment. I use GREATEST
-// to keep the later record from pulling the resume point backwards.
+// Kafka can move a partition between workers, and for a moment two workers
+// hold one. GREATEST stops the later record from pulling the resume point back.
 const BUMP_OFFSET = `INSERT INTO queue_offsets (topic, partition, next_offset) VALUES ($1, $2, $3)
    ON CONFLICT (topic, partition)
    DO UPDATE SET next_offset = GREATEST(queue_offsets.next_offset, EXCLUDED.next_offset)`
@@ -64,7 +64,8 @@ const MISSING = 'the stock row is missing. Run npm run db:migrate.'
  * Redis decides who wins. So this class never answers a buyer. It says what
  * the database does with one record from the queue.
  *
- * Kafka's exactly-once stops at the broker, so a Postgres write is outside it.
+ * Kafka can promise a record lands once in its own log. That promise stops at
+ * the broker, so a Postgres write is outside it.
  * `record` writes the offset with the order in one transaction, then refuses any
  * record below that offset. Kafka says where to resume. Postgres says what was
  * applied, and only Postgres is a correctness claim.
@@ -107,8 +108,9 @@ export class Gate {
       const seen = await client.query<{ next_offset: string }>(READ_OFFSET, where)
       const read = Number(seen.rows[0]?.next_offset ?? 0)
 
-      // Below the watermark the record is already applied. Stopping here is the
-      // exactly-once guard. The unique `user_id` is only the second one.
+      // Below the resume point the record is already applied, so stopping here
+      // is what keeps a replay from writing twice. The unique `user_id` is the
+      // second guard.
       if (read > win.offset) {
         await client.query('COMMIT')
         return 'replayed'

@@ -26,7 +26,7 @@ export const LIVE_KEY = 'sale:live'
 /** A win that never reached Kafka waits here. The sweep is the only thing that finds it. */
 const SWEEP_MS = 250
 
-/** How often a worker commits its applied offsets. An uncommitted tail replays. */
+/** How often a worker saves its place in the queue. Anything past the last save replays. */
 const COMMIT_MS = 1_000
 
 export type PipelineOptions = {
@@ -280,8 +280,8 @@ export class Pipeline {
 
   /**
    * A row still in `sale:outbox` is a unit the sale sold and Kafka never saw.
-   * A second send is safe, because the producer is idempotent and `orders` holds
-   * `UNIQUE (user_id)`.
+   * A second send is safe. The producer never writes the same record twice, and
+   * `orders` refuses a repeated `user_id`.
    */
   private async sweepOutbox(): Promise<void> {
     if (this.sweeping) return
@@ -343,8 +343,8 @@ export class Pipeline {
    * already wrote. So it can never run ahead. An inline commit was correct too, and
    * it cost 4.9 s of drain time on 1,000 records.
    *
-   * There is no `seek`. A replay from any earlier offset meets the fence in
-   * `Gate.record`, so the Kafka offset is a resume hint and costs only time.
+   * There is no `seek`. A replay from any earlier offset meets the resume-point
+   * check in `Gate.record`, so the Kafka offset is a hint and costs only time.
    */
   private async startWorker(): Promise<void> {
     const consumer = this.kafka.consumer({

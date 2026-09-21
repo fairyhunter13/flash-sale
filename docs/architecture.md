@@ -77,14 +77,14 @@ The insert uses `ON CONFLICT DO NOTHING`. A replay is then silent, and it needs 
 Exactly-once has three levels, and the code reaches two of them.
 
 - **Delivery.** Two systems cannot agree on one commit. No code reaches it.
-- **Processing.** The worker keeps a bookmark, which is the place it resumes reading from. It writes that bookmark inside the same transaction as the effect. The code reaches this level.
+- **Processing.** The worker keeps a resume point, which is the place it starts reading from again. It writes that resume point inside the same transaction as the effect. The code reaches this level.
 - **Effect.** The sink refuses a repeat on its own. The code reaches this level too.
 
 Kafka transactions cover what Kafka writes. A Postgres row sits outside them. Redpanda states the same limit for its own broker: exactly-once holds "only when the consumer's output is sent to a Kafka topic itself and not to other remote syncs". KIP-939 was designed to let a Kafka producer join an external transaction. Its public APIs were reverted from Kafka 4.1, 4.2, 4.3 and 4.4. A broker swap does not move the boundary.
 
-**That boundary is why `queue_offsets` exists.** The table holds the bookmark, and `Gate.record` writes it in the same transaction as the order row. A record whose offset sits below the bookmark is already applied. `Gate.record` returns `replayed` before it reaches the insert. Delete the table and the design drops to at-least-once delivery, where one record can arrive more than once. The exactly-once effect then rests on `UNIQUE (user_id)` alone.
+**That boundary is why `queue_offsets` exists.** The table holds the resume point, and `Gate.record` writes it in the same transaction as the order row. A record whose offset sits below the resume point is already applied. `Gate.record` returns `replayed` before it reaches the insert. Delete the table and the design drops to at-least-once delivery, where one record can arrive more than once. The exactly-once effect then rests on `UNIQUE (user_id)` alone.
 
-The consumer runs with `autoCommit: false`. A per-worker timer commits to Kafka only offsets that Postgres already wrote. The Kafka bookmark can never run ahead of the record. There is no `seek`. Kafka says where to resume, and a wrong answer there costs time. Postgres says what was applied, and only Postgres is a correctness claim.
+The consumer runs with `autoCommit: false`. A per-worker timer commits to Kafka only offsets that Postgres already wrote. The Kafka resume point can never run ahead of the record. There is no `seek`. Kafka says where to resume, and a wrong answer there costs time. Postgres says what was applied, and only Postgres is a correctness claim.
 
 A crash between the two commits replays the record, and the guard refuses it. A total loss of `__consumer_offsets` replays the partition from offset 0, and the guard refuses every record already applied.
 

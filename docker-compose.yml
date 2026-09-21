@@ -39,11 +39,9 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      # Two listeners, because a client is told where the broker is by the
-      # broker itself. PLAINTEXT names the host port, so your machine reaches
-      # it. INTERNAL names the container, so the healthcheck below reaches it.
-      # One listener cannot answer both, because the host address means nothing
-      # inside the container.
+      # Two listeners, because Kafka tells a client which address to come back
+      # on. PLAINTEXT hands back the host port for your machine. INTERNAL hands
+      # back the container name for the healthcheck below.
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:${KAFKA_PORT:-9092},INTERNAL://kafka:9094
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL

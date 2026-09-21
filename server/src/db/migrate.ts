@@ -19,7 +19,7 @@ export type Migration = {
   readonly sql: string
 }
 
-/** Every file in `server/sql/migrations`, in name order. */
+/** Migrations in filename order, which is the order they must run in. */
 export function migrations(): readonly Migration[] {
   const names = readdirSync(DIRECTORY)
     .filter((name) => name.endsWith('.sql'))

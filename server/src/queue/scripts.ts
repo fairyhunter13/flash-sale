@@ -64,7 +64,7 @@ for i = 2, #ARGV do
   redis.call('SADD', buyers, ARGV[i])
 end
 
--- The counter is also a liveness proof, so it is written even at 0. Without the
+-- The counter also proves Redis still holds this sale, so it is written even at 0. Without the
 -- -1 default a fresh sale leaves the key absent, and RESERVE reads that as a loss.
 if highest > tonumber(redis.call('GET', sold) or '-1') then
   redis.call('SET', sold, highest)

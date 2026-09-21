@@ -9,7 +9,7 @@ export type Config = {
   readonly redisUrl: string
   /** One or more `host:port`, separated by commas. */
   readonly kafkaBrokers: readonly string[]
-  /** Consumers in the group on this process. Kafka spreads the partitions over them. */
+  /** Workers on this process that share one Kafka consumer group. Kafka splits the partitions over them. */
   readonly queueWorkers: number
   readonly port: number
   readonly host: string

@@ -162,9 +162,9 @@ describe('the gate', () => {
     expect(await gate.stockLeft()).toBe(999)
   })
 
-  // The record below the watermark carries a buyer nobody wrote. A second order
-  // row here proves the fence never ran.
-  it('the fence refuses a record below the watermark before it reaches the stock', async () => {
+  // The record below the resume point carries a buyer nobody wrote. A second
+  // order row here proves the check never ran.
+  it('a record below the resume point never reaches the stock', async () => {
     expect(await gate.record(win('buyer-a', 1))).toBe('written')
     expect(await gate.record(win('buyer-b', 2))).toBe('written')
     expect(await gate.offsetOf(TOPIC, 0)).toBe(2)

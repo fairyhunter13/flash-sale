@@ -29,7 +29,7 @@ describe('the order table', () => {
     expect(rows[0]?.count).toBe('1')
   })
 
-  it('the second insert writes no row when it names the conflict', async () => {
+  it('the second insert writes no row when `ON CONFLICT` names the constraint', async () => {
     await pool.query('DELETE FROM orders')
     await pool.query('INSERT INTO orders(user_id) VALUES ($1)', ['buyer-b'])
 
