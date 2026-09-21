@@ -6,7 +6,7 @@ Every development task has an identifier, `D-01` to `D-16`. The numbers only go 
 
 Status is one of planned, in-progress, done, blocked or dropped. I give a blocked row and a dropped row one line of reason each, and every other status gets none.
 
-The last column names the test cases that cover the task. The cases run from `T-01` to `T-54` and come from the case table in [`docs/test-plan.md`](test-plan.md#cases).
+The last column names the test cases that cover the task. The cases run from `T-01` to `T-55` and come from the case table in [`docs/test-plan.md`](test-plan.md#cases).
 
 ## Context
 

@@ -64,6 +64,36 @@ The same command writes a second hash, `sale:issued`. The outbox empties when Ka
 
 The script costs one load, plus the `EVALSHA` recovery after a Redis restart. `Pipeline.runScript` catches `NOSCRIPT` and loads the script again. The gain is round trips: 4 commands take 4, and the script takes 1.
 
+## No key expires, and the stock is what bounds them
+
+Redis holds 5 keys, and the sale writes no others.
+
+| Key | What it holds |
+| --- | --- |
+| `sale:sold` | the highest place the sale has issued |
+| `sale:buyers` | one member for each winner |
+| `sale:outbox` | a win that the Kafka send has not confirmed |
+| `sale:issued` | a win that the order table does not hold yet |
+| `sale:live` | the proof that Redis still holds this sale |
+
+None of the 5 carries a time to live, which Redis calls a TTL. The `TTL` command answers `-1` on
+each one, and `-1` means the key exists and never expires. A test asserts both facts, so a later
+`EXPIRE` fails the suite.
+
+An expiry is a fault and never a saving. `sale:issued` is the only record of a win that Kafka
+carries and Postgres has not committed. A clock that deletes that entry deletes the win.
+`sale:live` and `sale:sold` are worse. `RESERVE` reads them as the proof that the sale is whole, so
+an expiry on either one refuses every buyer until the next rebuild.
+
+Time does not bound the memory, and the stock does. `RESERVE` runs `SADD sale:buyers` only after
+the sold-out check, and a buyer who loses at `INCR` leaves the set again through `SREM`. So the set
+takes a winner alone, and it stops at the stock. README records the measured run. The two hashes
+empty as each win lands, so they hold what is in flight and nothing more.
+
+**The keys outlive the sale, and that is the one trap.** A second campaign on the same Redis reads
+the first campaign's counter and answers `sold-out`. `npm run reset` clears Redis and starts again.
+`npm run sale:window` prints the same reminder when it moves the unit count.
+
 ## The unique index on the buyer is a second guard
 
 The Redis set is the fast guard in memory. `UNIQUE (user_id)` on `orders` is the slow guard on disk. The two fail independently, and that independence is the reason both stay. Erase Redis, or replay a record, and the write still meets the index.
@@ -100,7 +130,7 @@ Two detectors find the loss, and both end in one rebuild from the order rows.
 
 1. **The two keys the script checks first.** `RESERVE` refuses before it counts where either `sale:live` or `sale:sold` is gone, and it answers `lost`. `Pipeline.reserve` then rebuilds and asks once more. `REHYDRATE` writes the counter even at 0. A counter that exists is the proof that Redis still holds the sale. It writes the flag last. A script that dies half way then leaves the sale refused rather than wrong.
 
-   An earlier build guarded on `sale:live` alone. Delete only `sale:sold`. Redis drops a key on its own when it runs out of memory, and the deletion looks the same. The flag still passed the guard. `INCR` then restarted at 1 and handed a buyer a place Postgres already held. `orders` holds `UNIQUE (seq)`, so Postgres rejected the row. The buyer still read `won` for a unit they do not hold.
+   An earlier build guarded on `sale:live` alone. Delete only `sale:sold`. A Redis that runs out of memory can drop a key on its own. That needs an eviction policy, which the operator sets. The deletion then looks the same. This compose file sets no memory ceiling, so the shipped Redis evicts nothing and refuses the write instead. A production Redis usually sets a ceiling, and the guard is there for that one. The flag still passed the guard. `INCR` then restarted at 1 and handed a buyer a place Postgres already held. `orders` holds `UNIQUE (seq)`, so Postgres rejected the row. The buyer still read `won` for a unit they do not hold.
 2. **The counter check in the sweep.** A deletion cannot get past the check above. A counter rewritten to a lower number can, and the sweep is what catches that. Redis issues the place, and Postgres records it later. While Redis is whole, `sale:sold` is never below `MAX(orders.seq)`. The sweep reads one indexed `MAX(seq)` every 250 ms.
 
 The rebuild reads two sources, because Postgres alone does not hold every place. A win travels from the script to Kafka, and then to the order table. A place in flight sits in neither source that the rebuild can read. So `RESERVE` writes the buyer and the place into `sale:issued` in the same command that issues them. The worker deletes that entry later, after Postgres commits the order row. An entry left in the hash is a place Postgres does not hold yet.

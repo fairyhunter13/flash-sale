@@ -2,7 +2,14 @@ import type { Pool } from 'pg'
 import { createClient } from 'redis'
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from 'vitest'
 import { Gate } from '../../src/gate/gate.ts'
-import { Pipeline } from '../../src/queue/pipeline.ts'
+import {
+  BUYERS_KEY,
+  ISSUED_KEY,
+  LIVE_KEY,
+  OUTBOX_KEY,
+  Pipeline,
+  SOLD_KEY,
+} from '../../src/queue/pipeline.ts'
 import { poolFor, writeCampaign } from '../setup/db.ts'
 
 const START = Date.parse('2026-06-01T00:00:00Z')
@@ -14,11 +21,15 @@ let open: Pipeline[] = []
 let run = 0
 
 /** One sale, on its own keys and its own topic. */
-async function start(stock: number, workers = 1): Promise<{ gate: Gate; pipeline: Pipeline }> {
+async function start(
+  stock: number,
+  workers = 1,
+): Promise<{ gate: Gate; pipeline: Pipeline; namespace: string }> {
   await pool.query('DELETE FROM orders')
   await pool.query('DELETE FROM queue_offsets')
   await writeCampaign(pool, { stock, startMs: START, endMs: END })
   run += 1
+  const namespace = `t_pipe_${run}`
   const gate = new Gate(pool, 0)
   const sale = await gate.campaign()
   const pipeline = await Pipeline.start({
@@ -27,10 +38,10 @@ async function start(stock: number, workers = 1): Promise<{ gate: Gate; pipeline
     workers,
     sale,
     gate,
-    namespace: `t_pipe_${run}`,
+    namespace,
   })
   open.push(pipeline)
-  return { gate, pipeline }
+  return { gate, pipeline, namespace }
 }
 
 beforeAll(async () => {
@@ -317,5 +328,28 @@ describe('the pipeline', () => {
     expect(Number(await redis.get(`sale:sold${tail}`))).toBe(3)
     expect(await pipeline.left()).toBe(7)
     await redis.quit()
+  })
+
+  it('every Redis key the sale writes has no expiry, and there are only five of them', async () => {
+    const { pipeline, namespace } = await start(3)
+    await pipeline.reserve('a', DURING)
+
+    const redis = createClient({ url: inject('redisUrl') })
+    await redis.connect()
+    try {
+      const tail = `.${namespace}`
+      const allowed = [SOLD_KEY, BUYERS_KEY, OUTBOX_KEY, ISSUED_KEY, LIVE_KEY].map(
+        (key) => `${key}${tail}`,
+      )
+      const found = await redis.keys(`*${tail}`)
+      expect(found.length).toBeGreaterThan(0)
+      expect(found.filter((key) => !allowed.includes(key))).toEqual([])
+
+      // -1 means the key exists and never expires. Redis holds the only copy of a
+      // place that Postgres has not recorded yet, so an expiry there loses a win.
+      for (const key of found) expect(await redis.ttl(key)).toBe(-1)
+    } finally {
+      await redis.quit()
+    }
   })
 })

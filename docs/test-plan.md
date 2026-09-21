@@ -24,7 +24,7 @@ I tested the Redis pipeline, the four routes, the Kafka workers, the page and th
 
 The tier decides the folder. A `unit` case lives in `server/test/unit/` and `web/test/unit/`, and `npm run test:unit` runs those 23 while Docker is stopped.
 
-A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 54. `npm test` runs all 77.
+A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 55. `npm test` runs all 78.
 
 I left four things out.
 
@@ -155,6 +155,12 @@ Action: the rebuild runs.
 Expected result: the stranded buyer reaches the order table.
 Postcondition: the units left read 6, and the stranded place is never issued again.
 
+S-29 Every Redis key the sale writes has no expiry.
+Precondition: a sale is open, and one buyer holds a unit.
+Action: read every key that carries this sale's suffix.
+Expected result: each key answers `-1` to `TTL`, which means it never expires.
+Postcondition: no key outside the 5 the design names is present.
+
 S-11 A store does not answer.
 Precondition: the database is unreachable.
 Action: a buyer sends a purchase.
@@ -257,6 +263,7 @@ Postcondition: no source file holds syntax that strip-only mode refuses.
 | T-52 | The sweep rebuilds the counter when one erased key puts Redis behind Postgres | S-26 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > the sweep rebuilds the counter when one erased key puts Redis behind Postgres | 16 | engine |
 | T-53 | An erased counter alone never issues a place twice | S-27 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > an erased counter alone never issues a place twice | 14 | engine |
 | T-54 | A rebuild keeps a win that Kafka never confirmed | S-28 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a rebuild keeps a win that Kafka never confirmed | 15 | engine |
+| T-55 | No Redis key expires, and only 5 keys exist | S-29 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > every Redis key the sale writes has no expiry, and there are only five of them | 12 | engine |
 | T-36 | Every server source file runs under strip-only mode | S-18 | D-01 | done | server/test/unit/strip.spec.ts > the source runs under node > every server source file strips cleanly | 10 | route |
 | T-37 | A lost Redis is rebuilt from the order rows | S-17 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a lost Redis is rebuilt from the order rows, and the next place is right | 14 | engine |
 | T-38 | The Buy Now button is refused while the sale is not open | S-03 | D-10 | done | web/test/unit/App.spec.tsx > the page > the button is refused while the sale is not open | 12 | unit |
