@@ -1,23 +1,24 @@
 # Development plan
 
-```
-IDs      D-nn development task. Append-only. A retired row keeps its number.
-Status   planned | in-progress | done | blocked | dropped
-         blocked and dropped each carry one line of reason. The others carry none.
-Columns  | ID | Title | Status | Paths it owns | T-nn covering it |
-```
+## How to read a row
+
+Every development task has an identifier, `D-01` to `D-16`, and the numbers only go up. A dropped row keeps its number.
+
+**Status** is one of planned, in-progress, done, blocked or dropped. A blocked row and a dropped row each get one line of reason, but a row with any other status gets none.
+
+The last column names the test cases that cover the task. The cases run from `T-01` to `T-45` and come from the case table in [`docs/test-plan.md`](test-plan.md#cases).
 
 ## Context
 
 One product has limited stock. Far more buyers arrive than there are units.
 
-The system must sell every unit exactly once. It refuses a second unit to the same buyer and any purchase outside the sale window.
+The system sells each unit once, and it refuses a second unit to the same buyer. It also refuses any purchase outside the sale window.
 
-The project ends when a stress run where 10,000 buyers compete for 1,000 units proves all three rules. The run reports exactly 1,000 winners and exactly 9,000 refusals, and the order table holds exactly 1,000 rows.
+The project ends with one stress run, in which 10,000 buyers compete for 1,000 units. The run must prove all three rules. It reports exactly 1,000 winners and exactly 9,000 refusals, and the order table holds exactly 1,000 rows.
 
 ## Decisions
 
-Each row states the force behind the choice. `docs/decisions.md` holds the same decisions as the code shipped them.
+Each row states the reason for the choice. `docs/decisions.md` holds the same decisions, as the code shipped them.
 
 | Axis | Choice | Rejected | Evidence |
 | --- | --- | --- | --- |
@@ -45,7 +46,7 @@ flowchart TD
   api -->|SELECT| pg
 ```
 
-Two processes run: the Fastify server, which holds the workers, and the page. Redis, Kafka and Postgres run in Docker. The diagram lives in the README as a fenced `mermaid` block that GitHub renders, with no build step and no image to commit.
+Two processes run: the Fastify server, which holds the workers, and the page. Redis, Kafka and Postgres run in Docker. The README holds the diagram as a fenced `mermaid` block, and GitHub renders that block. The diagram needs no build step and no image to commit.
 
 ## Components
 
@@ -95,16 +96,15 @@ All source lives under two prefixes: `server/src` and `web/src`.
 | `POST /api/purchase` | `{userId}` | `{outcome}`, one of `won`, `already-bought`, `sold-out`, `not-open`, `over` | 400 with `{error}` for a missing or empty `userId`. 500 with `{error}` when Redis does not answer, and never an outcome. |
 | `GET /api/purchase/:userId` | the buyer identifier in the path | `{held: true\|false, at}` | 400 for an empty identifier. 503 with `{error}` when Postgres does not answer, because "no row" and "cannot read" are different answers. |
 
-A refusal and a fault must look different to the page. That is what the error column defines.
+A refusal and a fault must look different to the page. The error column defines that difference.
 
 ## Integration
 
-`docker compose up -d` starts Redis, Kafka and Postgres for the app, and `npm run dev` starts the server and the page. `npm test` does not need the compose stack: testcontainers starts its own set. `npm run stress` opens the sale, drives 10,000 buyers over 500 connections, then reads Postgres.
+`docker compose up -d` starts Redis, Kafka and Postgres for the app, and `npm run dev` starts the server and the page. `npm test` does not need the compose stack. The reason is that testcontainers starts its own set. `npm run stress` opens the sale and drives 10,000 buyers over 500 connections, then it reads Postgres.
 
 ## Task table
 
-Each row names the files it owns in the repository as it ships. Where the build replaced a file,
-the row names the replacement, and "What changed after the plan" below says why.
+Each row lists the files it owns in the repository as it ships, and where the build replaced a file, the row names the replacement. The section "What changed after the plan" below says why.
 
 | ID | Title | Status | Paths it owns | T-nn covering it |
 | --- | --- | --- | --- | --- |
@@ -127,7 +127,7 @@ the row names the replacement, and "What changed after the plan" below says why.
 
 ## What changed after the plan was written
 
-The plan was written before the code. Two parts changed during the build, and the rows already name the files that ship.
+The plan came before the code, but two parts changed during the build. The rows already name the files that ship.
 
 | Planned | Ships | Why it changed |
 | --- | --- | --- |
@@ -137,19 +137,19 @@ The plan was written before the code. Two parts changed during the build, and th
 | D-13 grounds every row of a concept map | dropped | The map was a planning tool. It shipped no behaviour, and its tests read the map rather than the code |
 | Three document tests read the README and the decision log | dropped | A test that reads prose turned red on every edit, and it proved nothing about the sale |
 
-`docs/design-experiments.md` holds the 9 designs we built and measured and the 21 faults we injected into them. That file is the evidence behind the first two rows.
+The first two rows rest on the evidence in `docs/design-experiments.md`, a file that holds the 9 designs we built and measured. It also holds the 21 faults we injected into them.
 
 ## What the build found
 
-Six findings from the build that no unit test would have reached, and each one now has a test behind it.
+Six findings came out of the build, but no unit test would have reached them. Each one now has a test behind it.
 
-1. `npm start` had never worked. `node --experimental-strip-types` only deletes types. A constructor parameter property is a SyntaxError. 6 of them were in the server. Because Vitest compiles the TypeScript, no test saw it. `server/test/unit/strip.spec.ts` now reads every file under `server/src` through `stripTypeScriptTypes`.
-2. `npm start` had never read `.env`. The scripts carried no `--env-file`. So the documented start command stopped at boot and named every missing variable.
-3. A shared table raced. Two test files share one `orders` table. The files run in parallel and wipe each other. Each file now migrates its own Postgres schema.
-4. Kafka's own offset commit loses rows. `autoCommit` on a timer left an offset past a row the worker never wrote, and 201 of 1,000 rows never landed. The offset now lives in Postgres, in the same transaction as the order row.
-5. The drain check counted the wrong records. A replay and a duplicate buyer are one record twice. Neither may count. With those in the count, the check reported success at 49 of 50 rows.
+1. Because `node --experimental-strip-types` only deletes types, `npm start` had never worked. A constructor parameter property is a SyntaxError, and the server held 6 of them. Vitest compiles the TypeScript. No test caught the error. `server/test/unit/strip.spec.ts` now reads every file under `server/src` through `stripTypeScriptTypes`.
+2. `npm start` had never read `.env`. The scripts carried no `--env-file`. The documented start command therefore stopped at boot and named every missing variable.
+3. A shared table caused a race: two test files share one `orders` table, and the files run in parallel and wipe each other's rows. Each file now migrates its own Postgres schema.
+4. Kafka's own offset commit loses rows. `autoCommit` on a timer left an offset past a row that the worker never wrote. As a result, 201 of 1,000 rows never landed. The offset now lives in Postgres, in the same transaction as the order row.
+5. The drain check counted the wrong records. A replay and a duplicate buyer are one record twice, and neither may count. With both in the count, the check reported success at 49 of 50 rows.
 6. Testing Library cleans up only under `globals: true`. Without `cleanup` in an `afterEach`, 4 of the 7 page tests read `Found multiple elements`.
 
-The stress run requires localhost: it empties the sale and truncates the orders table. `assertLocal` rejects any hostname outside localhost, but `STRESS_ALLOW_HOST` overrides it.
+Because the stress run empties the sale and truncates the orders table, it only works on localhost. `assertLocal` rejects any hostname outside localhost, but `STRESS_ALLOW_HOST` overrides that check.
 
-autocannon reports throughput but its request counts are approximate: `amount` is a per-connection quota, and issue #228 measured 999,969 requests for a requested 1,000,000 with no error. So `stress/run.ts` owns every count, and `stress/bench.ts` owns the latency.
+autocannon reports throughput, but its request counts are approximate. Its `amount` is a per-connection quota, and Issue #228 measured 999,969 requests for a requested 1,000,000 with no error. Because of that gap, `stress/run.ts` owns every count while `stress/bench.ts` owns the latency.

@@ -1,35 +1,45 @@
 # Test plan
 
-```
-IDs      T-nn test case. S-nn scenario. J-nn user journey. All append-only.
-Status   planned | in-progress | done | blocked | dropped
-         blocked carries the observed behaviour. dropped carries one line of reason.
-Tiers    E1 unit assertion | E2 request through the real route | E3 run against the
-         real engine | E4 run against the deployed target
-Risk     likelihood x impact, 1 to 5 each. 1 to 25. Bands: 1-6 low, 7-14 medium,
-         15-25 high. A high band earns a journey as well as a case.
-Columns  | ID | Title | S-nn | D-nn covered | Status | Test node ID | Risk | Tier |
-```
+## How to read a row
+
+Every row carries an identifier. A test case is `T-01`, a scenario is `S-01`, and a user journey is
+`J-01`. The numbers only go up, and a row that is dropped keeps its number.
+
+**Tier** says how much of the real system the test uses.
+
+- `unit` runs one module. It starts no container.
+- `route` sends a request through the real route.
+- `engine` runs against a real Redis, Kafka or Postgres.
+
+**Covers** names a development task, from `D-01` to `D-16`. The task table is in [`docs/development-plan.md`](development-plan.md#task-table).
+
+**Status** is one of planned, in-progress, done, blocked or dropped. A blocked row names the behavior that was seen, and a dropped row gives one line of reason.
+
+**Risk** is the likelihood times the impact. Each one runs from 1 to 5, so risk runs from 1 to 25. A score of 1 to 6 is low. A score of 7 to 14 is medium. A score of 15 to 25 is high. A high risk earns a user journey as well as a test case.
 
 ## Scope
 
-Under test: the Redis pipeline, the four routes, the Kafka workers, the page and the stress run. The runner is vitest. Every tier above E1 runs against a real Redis 7, a real Kafka 4 and a real Postgres 16, and testcontainers starts all three inside the test run.
+Every test tier except `unit` runs against real services: a real Redis 7, a real Kafka 4 and a real Postgres 16, all started by Testcontainers inside the test run. The runner is vitest.
 
-The tier decides the folder. E1 cases live in `server/test/unit/` and `web/test/unit/`, and `npm run test:unit` runs those 23 with Docker stopped. E2 and E3 cases live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 43. `npm test` runs all 66.
+Under test: the Redis pipeline, the four routes, the Kafka workers, the page and the stress run.
+
+The tier decides the folder: a `unit` case lives in `server/test/unit/` and `web/test/unit/`. `npm run test:unit` runs those 23 while Docker is stopped.
+
+A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 43. `npm test` runs all 66.
 
 Four things are excluded.
 
 - No deployment test exists, and nothing is deployed.
-- The person types a buyer identifier and the system trusts it: the README names that unstated trust as a hole.
-- The sale records a win and takes no money: no payment path exists to test.
-- Tests use the React testing library with no browser matrix.
+- The person types a buyer identifier, and the system trusts it. The README names that unstated trust as a hole.
+- The sale records a win but takes no money. No payment path exists to test.
+- Tests use the React testing library. They have no browser matrix.
 
 ## Scenarios
 
 S-01 Two buyers reach for the last unit.
 Precondition: the sale is open and 1 unit is left.
 Action: two different buyers send a purchase at the same time.
-Expected result: one answer is `won`, and the other is `sold-out`.
+Expected result: one answer is `won`. The other answer is `sold-out`.
 Postcondition: the count is 0 and does not go below it. Exactly 1 new record is on the topic.
 
 S-02 The same buyer attempts twice.
@@ -42,7 +52,7 @@ S-03 An attempt before the sale opens.
 Precondition: the clock is before the start time.
 Action: a buyer sends a purchase.
 Expected result: the answer is `not-open`.
-Postcondition: the count does not change, and no buyer is recorded.
+Postcondition: the count does not change. No buyer is recorded.
 
 S-04 An attempt after the sale ends.
 Precondition: the clock is after the end time, and units are left.
@@ -52,24 +62,24 @@ Postcondition: the count does not change.
 
 S-05 Ten thousand buyers race for one thousand units.
 Precondition: the sale is open with 1,000 units, and a worker runs.
-Action: 10,000 different buyers send one purchase each over 500 connections.
+Action: 10,000 different buyers each send one purchase over 500 connections.
 Expected result: exactly 1,000 answers are `won`, and exactly 9,000 are `sold-out`. The server answers every request.
-Postcondition: the order table holds exactly 1,000 rows, and each `user_id` appears once.
+Postcondition: the order table holds exactly 1,000 rows. Each `user_id` appears once.
 
 S-06 A buyer asks again after the answer is lost.
 Precondition: buyer A won a unit, and the worker wrote the row.
 Action: buyer A reads their own purchase state.
 Expected result: `held` is true.
-Postcondition: the count stays the same, and no second unit is taken.
+Postcondition: the count stays the same. No second unit is taken.
 
 S-07 The sale state is read.
 Precondition: the sale is open with units left.
 Action: a caller reads the sale.
 Expected result: `state` is `open`, and `stockLeft` is the real count.
-Postcondition: a sale read takes no unit.
+Postcondition: reading the sale takes no unit.
 
 S-08 A win becomes an order row.
-Precondition: one record is on the `sale.wins` topic, and a worker runs.
+Precondition: the `sale.wins` topic holds one record, and a worker runs.
 Action: the worker reads the record.
 Expected result: the worker inserts one row for that buyer.
 Postcondition: one transaction writes the order row, the unit and the offset together.
@@ -83,20 +93,20 @@ Postcondition: the order table holds 50 rows.
 S-10 The database refuses a second row for one buyer.
 Precondition: an order row exists for buyer A.
 Action: a worker reads a second record for buyer A.
-Expected result: the unique index refuses the insert, and the worker does not stop.
+Expected result: the unique index refuses the insert. The worker does not stop.
 Postcondition: the order table holds exactly 1 row for buyer A.
 
 S-11 A store does not answer.
 Precondition: the database is unreachable.
 Action: a buyer sends a purchase.
-Expected result: 500 with an `error` field. The response carries no `outcome` field.
+Expected result: 500 with an `error` field. The response has no `outcome` field.
 Postcondition: nothing is recorded.
 
 S-12 The page names each outcome.
 Precondition: the page is open, and the server answers a known outcome.
 Action: the person types a buyer identifier and presses the button.
-Expected result: the page shows the sentence for that outcome, and the five sentences differ.
-Postcondition: the page holds the outcome until the person attempts again.
+Expected result: the page shows one sentence for that outcome. The five sentences differ from each other.
+Postcondition: the page keeps the outcome until the person attempts again.
 
 S-13 The page shows the state of the sale.
 Precondition: the sale is not open yet, and the page is loaded.
@@ -105,16 +115,16 @@ Expected result: the page names the state and the units left. The page refuses t
 Postcondition: a page load takes no unit.
 
 S-14 Postgres does not answer.
-Precondition: Postgres is unreachable, and Redis answers normally.
+Precondition: Postgres is unreachable. Redis answers normally.
 Action: a buyer reads their own purchase state.
 Expected result: 503 with an `error` field. The response carries no `held` field.
-Postcondition: the page says something went wrong. The page does not tell the buyer they hold nothing.
+Postcondition: the page says something went wrong. It does not tell the buyer they hold nothing.
 
 S-15 The sale opens while the page is open.
 Precondition: the page holds an open stream, and the sale state is `pending`.
 Action: the sale start time passes.
 Expected result: the page shows `open` with no reload.
-Postcondition: the page closes its stream when the component unmounts, and the server holds no connection for it.
+Postcondition: the server holds no connection for the page, and the page closes its stream when the component unmounts.
 
 S-16 The server restarts during a live sale.
 Precondition: the sale is open, and some units are already sold.
@@ -123,7 +133,7 @@ Expected result: Redis keeps the sold-unit count. The boot rebuilds nothing.
 Postcondition: a unit already sold stays sold.
 
 S-17 Redis is lost while Postgres survives.
-Precondition: Postgres holds the order rows, and Redis holds no counter. Redis answers that way after a restart with no saved data, and after a replica is promoted.
+Precondition: Postgres holds the order rows, and Redis holds no counter. Redis answers that way after a restart with no saved data. It also answers that way after a replica is promoted.
 Action: the server boots.
 Expected result: the server rebuilds the counter and the buyer set from the order rows.
 Postcondition: the next buyer gets the next place. No unit goes to two buyers.
@@ -131,83 +141,87 @@ Postcondition: the next buyer gets the next place. No unit goes to two buyers.
 S-18 The reviewer starts the server with no build step.
 Precondition: a fresh clone, and `npm install` ran.
 Action: the reviewer runs `npm start`.
-Expected result: the server listens and answers. `node --experimental-strip-types` strips type annotations without transforming code. A constructor parameter property, an enum or a namespace is a SyntaxError.
+Expected result: the server listens and answers. `node --experimental-strip-types` removes type annotations from the code and changes nothing else. A constructor parameter property, an enum or a namespace is a SyntaxError.
 Postcondition: no source file holds syntax that strip-only mode refuses.
 
 ## Cases
 
 | ID | Title | Scenario | Covers | Status | Test node ID | Risk | Tier |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| T-01 | Every workspace builds and the types check | — | D-01, D-10 | done | `npm run build` | 6 | E1 |
-| T-02 | The schema creates the table and the unique index | — | D-02 | done | server/test/integration/schema.spec.ts > the order table > the order table refuses a duplicate user | 12 | E3 |
-| T-03 | The boot stops when a store address is missing, and the sale is not read here | — | D-03 | done | server/test/unit/config.spec.ts > the configuration > a missing DATABASE_URL stops the boot | 8 | E1 |
-| T-04 | Two buyers race for one unit, and one wins | S-01 | D-04, D-05 | done | server/test/integration/pipeline.spec.ts > the pipeline > a buyer who lost is told sold-out again, and holds no place in the set | 25 | E3 |
-| T-05 | A repeat buyer is refused with the right reason | S-02 | D-04, D-05 | done | server/test/integration/pipeline.spec.ts > the pipeline > a winner who asks again is told already-bought | 20 | E3 |
-| T-06 | A purchase before the start time is refused | S-03 | D-04 | done | server/test/integration/pipeline.spec.ts > the pipeline > the window is answered before any store is read | 12 | E3 |
-| T-07 | A purchase after the end time is refused | S-04 | D-04 | done | server/test/unit/status.spec.ts > the sale state > a sale that ended with units left is closed and not open | 12 | E1 |
-| T-08 | Parallel calls take exactly the stock, and no more | S-01 | D-05 | done | server/test/integration/pipeline.spec.ts > the pipeline > the set holds the stock, whatever the traffic is | 25 | E3 |
-| T-09 | The sale state follows the clock and the count | S-07 | D-06 | done | server/test/unit/status.spec.ts > the sale state > the state follows the clock and the count | 9 | E3 |
-| T-10 | GET /api/sale answers the state and the count | S-07 | D-07 | done | server/test/integration/routes.spec.ts > the routes > GET /api/sale answers the state | 9 | E2 |
-| T-11 | POST /api/purchase answers exactly one outcome | S-01, S-02 | D-07 | done | server/test/integration/routes.spec.ts > the routes > POST /api/purchase answers one outcome | 16 | E2 |
-| T-12 | A store that does not answer gives 500 and no outcome | S-11 | D-07 | done | server/test/integration/routes.spec.ts > the routes > a dead database gives 500 and no outcome | 15 | E2 |
-| T-13 | A win on the queue becomes one order row | S-08 | D-08 | done | server/test/integration/gate.spec.ts > the gate > one win writes one order row and takes one unit | 16 | E3 |
-| T-14 | A restart does not give back a unit already sold | S-09 | D-08 | done | server/test/integration/gate.spec.ts > the gate > a restart does not give back a unit already sold | 20 | E3 |
-| T-15 | GET /api/purchase/:userId reads the record | S-06 | D-09 | done | server/test/integration/orders.spec.ts > the purchase state > the purchase state reads the record | 9 | E2 |
-| T-16 | The page shows each of the five outcomes | S-12 | D-10 | done | web/test/unit/App.spec.tsx > the page > the page names each outcome | 9 | E1 |
-| T-17 | The button is refused while the identifier is empty | S-12 | D-10 | done | web/test/unit/App.spec.tsx > the page > an empty identifier cannot be sent | 6 | E1 |
-| T-18 | The stress run reports 1,000 wins and 9,000 refusals | S-05 | D-11 | done | `npm run stress` > PASS, all 6 counts match | 25 | E3 |
-| T-19 | Every command the README names exists in a package | — | D-12 | dropped | `readme.spec.ts` was deleted. A test that reads prose broke on every edit | 6 | E1 |
-| T-20 | Every requirement the map states is realized by a part | — | D-13 | dropped | `concepts.spec.ts` was deleted with the concept map | 12 | E3 |
-| T-21 | The unique index refuses a second row for one buyer | S-10 | D-08 | done | server/test/integration/schema.spec.ts > the order table > the order table refuses a duplicate user | 20 | E3 |
-| T-22 | The page names the state and the units left | S-13 | D-10 | done | web/test/unit/App.spec.tsx > the page > the page shows the sale state and the stock | 12 | E1 |
-| T-23 | The README holds a diagram and a scaling section | — | D-12, D-14 | dropped | `readme.spec.ts` was deleted. A test that reads prose broke on every edit | 9 | E1 |
-| T-24 | A Postgres that does not answer gives 503 and no held field | S-14 | D-09 | done | server/test/integration/orders.spec.ts > the purchase state > a dead Postgres gives 503 and no held field | 15 | E2 |
-| T-25 | Every number the README claims comes from a run | — | D-12 | dropped | `readme.spec.ts` was deleted. A test that reads prose broke on every edit | 9 | E1 |
-| T-26 | A fresh clone installs, builds and tests with no extra step | — | D-15 | done | Run by hand against a clone of HEAD in an empty directory | 16 | E3 |
-| T-27 | Every Decision row has a section in the decision log | — | D-16 | dropped | `decisions.spec.ts` was deleted with the concept map it read | 9 | E1 |
-| T-42 | Every decision entry states the question and what it gives up | — | D-16 | dropped | `decisions.spec.ts` was deleted with the concept map it read | 7 | E1 |
-| T-43 | Every case and every failure the map states is covered by a check | — | D-13 | dropped | `concepts.spec.ts` was deleted with the concept map | 8 | E3 |
-| T-44 | Every failure the map states is handled by a part | — | D-13 | dropped | `concepts.spec.ts` was deleted with the concept map | 6 | E3 |
-| T-45 | The concept file reads back as rows, and every row has a name | — | D-13 | dropped | `concepts.spec.ts` was deleted with the concept map | 5 | E3 |
-| T-28 | The stream pushes a state change, and a closed page releases it | S-15 | D-07 | done | server/test/integration/stream.spec.ts > the stream > the stream pushes a change and closes cleanly | 16 | E2 |
-| T-29 | A restart does not give back a unit already sold | S-16 | D-05 | done | server/test/integration/gate.spec.ts > the gate > a restart does not give back a unit already sold | 20 | E3 |
-| T-31 | Each boundary instant lands on the right state | S-07 | D-06 | done | server/test/unit/status.spec.ts > the sale state > a sale that ended with units left is closed and not open | 12 | E3 |
-| T-32 | An empty userId is refused before a store is touched | S-12 | D-07 | done | server/test/integration/routes.spec.ts > the routes > an empty userId is refused before the database is touched | 8 | E2 |
-| T-33 | Two open pages share one ticker, and each gets the state at once | S-15 | D-07 | done | server/test/integration/stream.spec.ts > the stream > a second page gets the state at once, and one tick serves both | 9 | E2 |
-| T-34 | A record read twice writes no second row | S-10 | D-08 | done | server/test/integration/gate.spec.ts > the gate > the same record read twice writes one row | 16 | E3 |
-| T-35 | The workers drain every win the buyers produced | S-08 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > Redis answers the buyer, and the database holds the same winners | 12 | E3 |
-| T-30 | An insert that names the conflict writes no second row | S-10 | D-02, D-08 | done | server/test/integration/schema.spec.ts > the order table > the second insert writes no row when it names the conflict | 12 | E3 |
-| T-36 | Every server source file runs under strip-only mode | S-18 | D-01 | done | server/test/unit/strip.spec.ts > the source runs under node > every server source file strips cleanly | 10 | E2 |
-| T-37 | A lost Redis is rebuilt from the order rows | S-17 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a lost Redis is rebuilt from the order rows, and the next place is right | 14 | E3 |
-| T-38 | The Buy Now button is refused while the sale is not open | S-03 | D-10 | done | web/test/unit/App.spec.tsx > the page > the button is refused while the sale is not open | 12 | E1 |
-| T-39 | A reload tells the buyer what they already hold | S-06 | D-10 | done | web/test/unit/App.spec.tsx > the page > a reload tells the buyer what they already hold | 14 | E1 |
-| T-40 | A record that cannot be read never says the buyer holds nothing | S-14 | D-10 | done | web/test/unit/App.spec.tsx > the page > a record that cannot be read never says the buyer holds nothing | 16 | E1 |
-| T-41 | A stream that fails says the sale cannot be read | S-11 | D-10 | done | web/test/unit/App.spec.tsx > the page > a stream that fails says the sale cannot be read | 13 | E1 |
+| T-01 | Every workspace builds and the types check | — | D-01, D-10 | done | `npm run build` | 6 | unit |
+| T-02 | The schema creates the table and the unique index | — | D-02 | done | server/test/integration/schema.spec.ts > the order table > the order table refuses a duplicate user | 12 | engine |
+| T-03 | The boot stops when a store address is missing, and the sale is not read here | — | D-03 | done | server/test/unit/config.spec.ts > the configuration > a missing DATABASE_URL stops the boot | 8 | unit |
+| T-04 | Two buyers race for one unit, and one wins | S-01 | D-04, D-05 | done | server/test/integration/pipeline.spec.ts > the pipeline > a buyer who lost is told sold-out again, and holds no place in the set | 25 | engine |
+| T-05 | A repeat buyer is refused with the right reason | S-02 | D-04, D-05 | done | server/test/integration/pipeline.spec.ts > the pipeline > a winner who asks again is told already-bought | 20 | engine |
+| T-06 | A purchase before the start time is refused | S-03 | D-04 | done | server/test/integration/pipeline.spec.ts > the pipeline > the window is answered before any store is read | 12 | engine |
+| T-07 | A purchase after the end time is refused | S-04 | D-04 | done | server/test/unit/status.spec.ts > the sale state > a sale that ended with units left is closed and not open | 12 | unit |
+| T-08 | Parallel calls take exactly the stock, and no more | S-01 | D-05 | done | server/test/integration/pipeline.spec.ts > the pipeline > the set holds the stock, whatever the traffic is | 25 | engine |
+| T-09 | The sale state follows the clock and the count | S-07 | D-06 | done | server/test/unit/status.spec.ts > the sale state > the state follows the clock and the count | 9 | engine |
+| T-10 | GET /api/sale answers the state and the count | S-07 | D-07 | done | server/test/integration/routes.spec.ts > the routes > GET /api/sale answers the state | 9 | route |
+| T-11 | POST /api/purchase answers exactly one outcome | S-01, S-02 | D-07 | done | server/test/integration/routes.spec.ts > the routes > POST /api/purchase answers one outcome | 16 | route |
+| T-12 | A store that does not answer gives 500 and no outcome | S-11 | D-07 | done | server/test/integration/routes.spec.ts > the routes > a dead database gives 500 and no outcome | 15 | route |
+| T-13 | A win on the queue becomes one order row | S-08 | D-08 | done | server/test/integration/gate.spec.ts > the gate > one win writes one order row and takes one unit | 16 | engine |
+| T-14 | A restart does not give back a unit already sold | S-09 | D-08 | done | server/test/integration/gate.spec.ts > the gate > a restart does not give back a unit already sold | 20 | engine |
+| T-15 | GET /api/purchase/:userId reads the record | S-06 | D-09 | done | server/test/integration/orders.spec.ts > the purchase state > the purchase state reads the record | 9 | route |
+| T-16 | The page shows each of the five outcomes | S-12 | D-10 | done | web/test/unit/App.spec.tsx > the page > the page names each outcome | 9 | unit |
+| T-17 | The button is refused while the identifier is empty | S-12 | D-10 | done | web/test/unit/App.spec.tsx > the page > an empty identifier cannot be sent | 6 | unit |
+| T-18 | The stress run reports 1,000 wins and 9,000 refusals | S-05 | D-11 | done | `npm run stress` > PASS, all 6 counts match | 25 | engine |
+| T-19 | Every command the README names exists in a package | — | D-12 | dropped | `readme.spec.ts` was deleted. A test that reads prose broke on every edit | 6 | unit |
+| T-20 | Every requirement the map states is realized by a part | — | D-13 | dropped | `concepts.spec.ts` was deleted with the concept map | 12 | engine |
+| T-21 | The unique index refuses a second row for one buyer | S-10 | D-08 | done | server/test/integration/schema.spec.ts > the order table > the order table refuses a duplicate user | 20 | engine |
+| T-22 | The page names the state and the units left | S-13 | D-10 | done | web/test/unit/App.spec.tsx > the page > the page shows the sale state and the stock | 12 | unit |
+| T-23 | The README holds a diagram and a scaling section | — | D-12, D-14 | dropped | `readme.spec.ts` was deleted. A test that reads prose broke on every edit | 9 | unit |
+| T-24 | A Postgres that does not answer gives 503 and no held field | S-14 | D-09 | done | server/test/integration/orders.spec.ts > the purchase state > a dead Postgres gives 503 and no held field | 15 | route |
+| T-25 | Every number the README claims comes from a run | — | D-12 | dropped | `readme.spec.ts` was deleted. A test that reads prose broke on every edit | 9 | unit |
+| T-26 | A fresh clone installs, builds and tests with no extra step | — | D-15 | done | Run by hand against a clone of HEAD in an empty directory | 16 | engine |
+| T-27 | Every Decision row has a section in the decision log | — | D-16 | dropped | `decisions.spec.ts` was deleted with the concept map it read | 9 | unit |
+| T-42 | Every decision entry states the question and what it gives up | — | D-16 | dropped | `decisions.spec.ts` was deleted with the concept map it read | 7 | unit |
+| T-43 | Every case and every failure the map states is covered by a check | — | D-13 | dropped | `concepts.spec.ts` was deleted with the concept map | 8 | engine |
+| T-44 | Every failure the map states is handled by a part | — | D-13 | dropped | `concepts.spec.ts` was deleted with the concept map | 6 | engine |
+| T-45 | The concept file reads back as rows, and every row has a name | — | D-13 | dropped | `concepts.spec.ts` was deleted with the concept map | 5 | engine |
+| T-28 | The stream pushes a state change, and a closed page releases it | S-15 | D-07 | done | server/test/integration/stream.spec.ts > the stream > the stream pushes a change and closes cleanly | 16 | route |
+| T-29 | A restart does not give back a unit already sold | S-16 | D-05 | done | server/test/integration/gate.spec.ts > the gate > a restart does not give back a unit already sold | 20 | engine |
+| T-31 | Each boundary instant lands on the right state | S-07 | D-06 | done | server/test/unit/status.spec.ts > the sale state > a sale that ended with units left is closed and not open | 12 | engine |
+| T-32 | An empty userId is refused before a store is touched | S-12 | D-07 | done | server/test/integration/routes.spec.ts > the routes > an empty userId is refused before the database is touched | 8 | route |
+| T-33 | Two open pages share one ticker, and each gets the state at once | S-15 | D-07 | done | server/test/integration/stream.spec.ts > the stream > a second page gets the state at once, and one tick serves both | 9 | route |
+| T-34 | A record read twice writes no second row | S-10 | D-08 | done | server/test/integration/gate.spec.ts > the gate > the same record read twice writes one row | 16 | engine |
+| T-35 | The workers drain every win the buyers produced | S-08 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > Redis answers the buyer, and the database holds the same winners | 12 | engine |
+| T-30 | An insert that names the conflict writes no second row | S-10 | D-02, D-08 | done | server/test/integration/schema.spec.ts > the order table > the second insert writes no row when it names the conflict | 12 | engine |
+| T-36 | Every server source file runs under strip-only mode | S-18 | D-01 | done | server/test/unit/strip.spec.ts > the source runs under node > every server source file strips cleanly | 10 | route |
+| T-37 | A lost Redis is rebuilt from the order rows | S-17 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a lost Redis is rebuilt from the order rows, and the next place is right | 14 | engine |
+| T-38 | The Buy Now button is refused while the sale is not open | S-03 | D-10 | done | web/test/unit/App.spec.tsx > the page > the button is refused while the sale is not open | 12 | unit |
+| T-39 | A reload tells the buyer what they already hold | S-06 | D-10 | done | web/test/unit/App.spec.tsx > the page > a reload tells the buyer what they already hold | 14 | unit |
+| T-40 | A record that cannot be read never says the buyer holds nothing | S-14 | D-10 | done | web/test/unit/App.spec.tsx > the page > a record that cannot be read never says the buyer holds nothing | 16 | unit |
+| T-41 | A stream that fails says the sale cannot be read | S-11 | D-10 | done | web/test/unit/App.spec.tsx > the page > a stream that fails says the sale cannot be read | 13 | unit |
 
 ## User journeys
 
-J-01, a buyer wins. The buyer opens the page before the sale, where it shows `pending`, and when the sale opens the page shows `open` without a reload. The buyer types an identifier and presses the button, and the page confirms the unit is theirs. Acceptance: the order table holds that buyer, and a reload shows the same answer read from the record.
+J-01, a buyer wins. The buyer opens the page before the sale, and it shows `pending`. When the sale opens, the page shows `open` without a reload. The buyer types an identifier and presses the button, and the page then confirms that the unit is theirs.
 
-J-02, a buyer loses when stock is 1 and another buyer already took it: the buyer attempts, and the page says sold out. Acceptance: the page distinguishes "sold out" from "already bought" and shows the buyer which one applies.
+Acceptance: the order table holds that buyer. A reload shows the same answer, read from the record.
+
+J-02: A buyer loses a sale when stock is 1 and another buyer already took it, and the buyer tries to buy but the page says sold out. Acceptance: the page tells "sold out" apart from "already bought" and shows the buyer which one applies.
 
 J-03, the stress run: `docker compose up -d`, then `npm run stress`. Acceptance: the run prints the three counts and the command that produced them.
 
-J-04, a reviewer clones the repository, runs `npm install` and `npm test`, and reads the README. Acceptance: every command appears in the README, the test run starts its own Redis and Postgres, and the diagram renders on the GitHub page.
+J-04, a reviewer clones the repository, runs `npm install` and `npm test`, and reads the README.
+
+Acceptance: every command appears in the README, and the test run starts its own Redis and Postgres. The diagram renders on the GitHub page.
 
 ## Experience bar
 
-- A refusal and a fault never look alike. `sold-out` means the sale ran out. A Redis failure is a 500, and the page says something went wrong.
-- An error names the valid set. A bad `userId` is answered with what a `userId` must be.
-- No silent empty answer. `GET /api/purchase/:userId` for a buyer who never bought answers `held: false`. A Postgres read failure answers 503.
+- A refusal and a fault look different. `sold-out` means the sale ran out. A Redis failure is a 500, and the page says something went wrong.
+- An error names the valid set. A bad `userId` gets an answer that says what a `userId` must be.
+- No answer is silently empty. `GET /api/purchase/:userId` for a buyer who never bought answers `held: false`. A Postgres read failure answers 503.
 
 ## Fixtures
 
-`redis:7` and `postgres:16` are real containers, started by testcontainers in `server/test/setup/containers.ts` for every E3 run, each on its own port. The same two images run under `docker-compose.yml` for the app and the stress run. `stress/run.ts` generates the 10,000 buyer identifiers, unique by construction. No mock stands in for Redis or Postgres in any E3 row. T-12 and T-24 each simulate a dead engine by closing the real connection.
+`redis:7` and `postgres:16` are real containers. Testcontainers starts them in `server/test/setup/containers.ts` for every `engine` run, each on its own port. The same two images run under `docker-compose.yml` for the app and the stress run. `stress/run.ts` generates the 10,000 buyer identifiers, and they are unique by construction. No `engine` row uses a mock for Redis or Postgres, and T-12 and T-24 each simulate a dead engine by closing the real connection.
 
 ## Traceability
 
 Three checks, each one command.
 
-1. The output of `npx vitest list --json=/tmp/nodes.json` must contain every claimed node ID in this file. `vitest list` ignores `--reporter`. `--json=<path>` is the form that writes anything. A row that names a test the runner does not collect proves nothing.
-2. Every `T-nn` names at least one `D-nn`, and every `D-nn` is named by at least one `T-nn`, checked by an `awk` pass over both documents.
-3. The map agrees. A build of the map over this root reports 60 open gaps, and all 60 are named. 56 are parts the builder derived from the code that no sentence gives a reason for. 4 are qualities that conceptor cannot yet grade. T-20, T-43, T-44 and T-45 cover the part a check can read. They run in the suite with no Python and no conceptor install.
+1. Run `npx vitest list --json=/tmp/nodes.json`. The output must contain every claimed node ID in this file. `vitest list` ignores `--reporter`. Only the `--json=<path>` form writes anything. A row that names a test the runner does not collect proves nothing.
+2. Every `T-nn` names at least one `D-nn`. Every `D-nn` is named by at least one `T-nn`. An `awk` pass over both documents checks this.
+3. The map must agree. A build of the map over this root reports 60 open gaps, and all 60 are named. Of the 60, 56 are parts that the builder derived from the code and that no sentence gives a reason for. The other 4 are qualities that conceptor cannot yet grade. T-20, T-43, T-44 and T-45 cover the part that a check can read. They run in the suite with no Python and no conceptor install.
