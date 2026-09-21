@@ -14,22 +14,22 @@ Every row carries an identifier. I number a test case `T-01`, a scenario `S-01`,
 
 **Status** is one of planned, in-progress, done, blocked or dropped. A blocked row names the behavior I saw, and a dropped row gets one line to say why.
 
-**Risk** is the likelihood times the impact. Each one runs from 1 to 5, and risk runs from 1 to 25. A score of 1 to 6 is low, and a score of 7 to 14 is medium. A score of 15 to 25 is high, and a high risk earns a user journey as well as a test case.
+**Risk** is the likelihood times the impact. Each one runs from 1 to 5, so risk runs from 1 to 25. A score of 1 to 6 is low, 7 to 14 is medium, and 15 to 25 is high. A high risk earns a user journey as well as a test case.
 
 ## Scope
 
-Every tier except `unit` talks to real services. I run a real Redis 7, a real Kafka 4 and a real Postgres 16, and Testcontainers starts all three inside the test run. The runner is vitest.
+Every tier except `unit` talks to real services. Testcontainers starts a real Redis 7, a real Kafka 4 and a real Postgres 16 inside the test run, and vitest is the runner.
 
 I tested the Redis pipeline, the four routes, the Kafka workers, the page and the stress run.
 
-The tier decides the folder, and a `unit` case lives in `server/test/unit/` and `web/test/unit/`. `npm run test:unit` runs those 23 while Docker is stopped.
+The tier decides the folder. A `unit` case lives in `server/test/unit/` and `web/test/unit/`, and `npm run test:unit` runs those 23 while Docker is stopped.
 
 A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 54. `npm test` runs all 77.
 
 I left four things out.
 
 - Nothing is deployed, and I wrote no deployment test.
-- The user types a buyer identifier and I trust it, but the README names that trust as a hole.
+- The user types a buyer identifier and I trust it. The README names that trust as a hole.
 - The sale records a win but takes no money. I built no payment path, and there is nothing to test yet.
 - The tests use the React testing library, but I ran no browser matrix.
 

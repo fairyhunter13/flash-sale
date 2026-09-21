@@ -18,7 +18,7 @@ npm start                # migrates the database, then serves on :3000
 
 Open `http://127.0.0.1:3000`. One server serves both the page and the API, and there is no CORS.
 
-The sale is one row in the database. The file `server/sql/migrations/0002_campaign.sql` writes 1,000 units, and it sets a start in 2026 and an end in 2036. So the sale is open the moment you start.
+One row in the database is the whole sale. `server/sql/migrations/0002_campaign.sql` writes 1,000 units, a start in 2026 and an end in 2036. The sale is open the moment you start.
 
 To move the window, run `npm run sale:window`. The server picks the change up within one sweep, which is 250 ms, and it needs no restart.
 
@@ -118,7 +118,7 @@ I split the state across three places. Each one has a single job.
 | Kafka 4 | `sale.wins`, 4 partitions | It carries each win, so the buyer waits for no database write. |
 | Postgres 16 | `stock`, `orders` and `queue_offsets` | It is the permanent record, and the only store that must survive a restart. |
 
-Redis answers the buyer in one round trip. `Pipeline.reserve` in `server/src/queue/pipeline.ts` runs the `RESERVE` script from `server/src/queue/scripts.ts`, and Redis runs that whole script as one command. The script does up to 6 steps, and it stops at the first refusal. Before step 1 it checks that `sale:live` and `sale:sold` both exist. Where either key is gone, Redis lost the sale, and the script answers `lost` rather than count.
+Redis answers the buyer in one round trip. `Pipeline.reserve` in `server/src/queue/pipeline.ts` runs the `RESERVE` script from `server/src/queue/scripts.ts`, and Redis runs that whole script as one command. The script does up to 6 steps, and it stops at the first refusal. Before step 1 it checks that `sale:live` and `sale:sold` both exist. Where either key is gone, Redis lost the sale. The script answers `lost` and counts nothing.
 
 1. `GET sale:sold`. If the count already reached the stock, the buyer reads `sold-out`. Nothing is written anywhere.
 2. `SADD sale:buyers`. If the member was already in the set, the buyer holds a unit and the answer is `already-bought`.
@@ -129,13 +129,13 @@ Redis answers the buyer in one round trip. `Pipeline.reserve` in `server/src/que
 
 Kafka gets one record for a winner's place, and the buyer is the key. A reconciler sweeps `sale:outbox` every 250 ms and sends each leftover row again. A rebuild after a Redis loss reads the order rows and `sale:issued` together. A place in flight sits in neither the order table nor a cleared outbox.
 
-The script is what makes steps 2 to 4 safe together. As 3 separate commands, a parallel request from a buyer who lost at step 3 could read the set between step 2 and step 4. It then answered `already-bought` for a unit nobody won. No other client runs inside the script, so that gap is gone.
+Steps 2 to 4 are safe together only because one script holds them. Run them as 3 separate commands. A second request from a buyer who lost at step 3 then reads the set between step 2 and step 4. It then answers `already-bought` for a unit nobody won. Inside the script no other client runs at all, and the gap closes.
 
 `SADD` in step 2 is the only "one unit for each buyer" check on the fast path.
 
 Without `SADD`, a repeat buyer reaches `INCR`, and the counter then drops a unit for someone who already holds one. Postgres still refuses the second order row at `UNIQUE (user_id)`. Nobody gets two units. But the count loses that unit, and the sale reads sold out with fewer than 1,000 order rows.
 
-The set grows with the stock. Step 4 is the reason.
+Step 4 is why the set grows with the stock and not with the crowd.
 
 I ran 30,000 buyers against 1,000 units, and Redis held 1,000 members and 47,504 bytes. Drop step 4 and the same run held 30,000 members and 1,461,456 bytes. The run without step 4 used 30.8 times more memory.
 
@@ -143,7 +143,7 @@ In a flash sale, the crowd size is the number nobody can predict.
 
 `Gate.record` in `server/src/gate/gate.ts` writes the permanent state: it writes the order row, takes the unit and moves the queue resume point. I wrap all three in one Postgres transaction. The `no-unit-left` path is the one exception: it rolls the transaction back, then moves the resume point on its own.
 
-The lookup can lag behind the purchase answer. `GET /api/purchase/:userId` reads Postgres only, and a buyer told `won` can briefly read `held: false` until a worker writes their row. I measured 12 runs of 1,000 wins each. The last row landed 566 ms to 3,285 ms after the last buyer got an answer. The page does not need that route for the purchase result, and `POST /api/purchase` already carries the outcome.
+One route lags behind the purchase answer. `GET /api/purchase/:userId` reads Postgres only, and a buyer told `won` can briefly read `held: false` until a worker writes their row. I measured 12 runs of 1,000 wins each. The last row landed 566 ms to 3,285 ms after the last buyer got an answer. The page does not need that route for the purchase result, and `POST /api/purchase` already carries the outcome.
 
 The server has 4 routes.
 
@@ -154,7 +154,7 @@ The server has 4 routes.
 | `POST /api/purchase` | one of `won`, `already-bought`, `sold-out`, `not-open`, `over` |
 | `GET /api/purchase/:userId` | whether that buyer holds a unit, and when they got it |
 
-I run one ticker for every open page. Each tick, it reads the state once and then writes to each open socket. 1,000 pages cost 1 read.
+One ticker serves every open page. It reads the state once per tick, then writes to each open socket. So 1,000 pages cost one read.
 
 The state read costs no database round trip. `GET /api/sale` takes the units left from Redis, and the sale window from a copy of `stock` that I let `Gate` hold for 250 ms. The window never moves while the sale runs. A stale copy cannot be wrong.
 
@@ -187,7 +187,7 @@ Four guards protect the count.
 | `UNIQUE (user_id)` | `orders_user_id_key` | a second unit for one buyer, and a record read twice |
 | `CHECK (units_left >= 0)` | `stock_never_negative` | a future defect, as a failed transaction |
 
-The last two guards live in `server/sql/migrations/0001_tables.sql`. Each one has a test in `server/test/integration/schema.spec.ts` that tries to break it, and when the worker fails, the database rolls back the transaction and the stock stays intact.
+The last two guards live in `server/sql/migrations/0001_tables.sql`. Each one has a test in `server/test/integration/schema.spec.ts` that tries to break it. When the worker fails, Postgres rolls the transaction back, and the stock stays intact.
 
 ## Why the Redis decision is one script and not a transaction
 
@@ -222,7 +222,7 @@ I ran this on a box with an Intel Core Ultra 9 275HX, 24 cores, 62 GB RAM and No
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
 | Tests | 77 over 11 files: 23 unit, 54 integration against real Postgres, Redis and Kafka | `npm test` |
 
-The purchase route is as fast as the read route, and Redis answers both. The earlier version opened a Postgres transaction on every purchase and ran at 11,529 a second. Redis raised the refusal path by 2.9 times.
+Redis answers both routes, and the purchase route is as fast as the read route. An earlier version opened a Postgres transaction on every purchase and ran at 11,529 a second. Redis raised the refusal path by 2.9 times.
 
 `npm run bench` drives one repeat buyer against a sold-out sale. It measures the refusal path only. `npm run stress` measures the winning path at 6,750 to 8,380 a second, and that last number includes the Kafka send.
 
@@ -232,42 +232,38 @@ The load generator and the server share the same 24 cores, and the server is one
 
 Four things break first, in this order.
 
-1. **The single Node process**, when it runs out of open sockets. Fastify holds no state, so `N` processes behind one load balancer answer `N` times the requests. One Redis still holds the count, and no process decides alone.
-2. **Redis, on one CPU core.** Its commands run on one thread, so the whole decision path sits on that core. The ceiling is still high.
-3. **The queue drain**, once wins arrive faster than the workers retire them. A buyer never feels it, and the lag on `GET /api/purchase/:userId` grows instead. More partitions and a higher `QUEUE_WORKERS` raise the drain rate.
-4. **The single stock row**, far above 1,000 units. Every worker takes its unit with an `UPDATE` on row `id = 1`, so those writes run one at a time. The change is `N` stock rows of `stock / N`, which gives up a perfect sell-out.
+1. **The single Node process**, when it runs out of open sockets. More processes behind one load balancer answer more requests.
+2. **Redis, on one CPU core.** Every command runs on that one thread. The ceiling is still high.
+3. **The queue drain**, once wins arrive faster than the workers retire them. A buyer never feels it. The lag on `GET /api/purchase/:userId` grows instead, and a higher `QUEUE_WORKERS` pulls it back.
+4. **The single stock row**, far above 1,000 units. Every worker updates row `id = 1`, one write at a time. The change is `N` stock rows of `stock / N`, and it gives up a perfect sell-out.
 
-Database connections are the bottleneck people expect, and they are not one here. At 500 open sockets with `DB_POOL_MAX` set to 20, Postgres held 4 backends at the peak, because Redis answers the buyer path and only the workers and the page reads touch the pool. Past one process, PgBouncer in transaction mode multiplexes thousands of client connections onto tens of server ones.
+Database connections are the bottleneck people expect. They are not one here. At 500 open sockets with `DB_POOL_MAX` set to 20, Postgres held 4 backends at the peak.
 
-[`docs/architecture.md`](docs/architecture.md#scaling) gives each measurement, plus the waiting room and the target picture at a million buyers.
+[`docs/architecture.md`](docs/architecture.md#scaling) gives each measurement, the change that moves each limit, and the target picture at a million buyers.
 
 ## Why Redis, a queue and a database
 
 Three stores are more than one flash sale needs. The split is what makes each store fail on its own.
 
-A single writer that keeps the count in one process runs 2.5 times faster. It cannot survive a second process, a fence that makes it safe costs a third of that speed, and it still lost 477 acknowledged wins when I killed the process.
-
-With the split, I injected 2 seconds of delay into the Postgres link and the sale kept answering buyers at 1,740 decisions a second, with all 1,000 wins intact. A design that writes the order inside the request committed 0 wins when Postgres stopped, and the buyer never heard an answer.
+A single writer that keeps the count in one process runs 2.5 times faster, and it cannot survive a second process. A fence that makes it safe costs a third of that speed, and it still lost 477 acknowledged wins when I killed the process. With the split I injected 2 seconds of delay into the Postgres link. The sale kept answering at 1,740 decisions a second, with all 1,000 wins intact. The same fault against a design that writes the order inside the request committed 0 wins, and the buyer never heard an answer.
 
 [`docs/architecture.md`](docs/architecture.md#redis-decides-the-winner-and-postgres-keeps-the-record) gives the full argument and the four costs.
 
 ## Trade-offs
 
-I split the work across three stores, and each one can fail on its own without taking the other two down. Redis decides who wins, Kafka carries the orders, and Postgres records them. The buyer never waits for a database write, and arrival spikes land in a log instead. A slow database only adds drain time.
+The split above costs two more containers, and it leaves a window where Redis holds a win that Postgres does not have yet. I measured both.
 
-The cost is two more containers. There is also a window where Redis holds a win that Postgres does not have yet. I measured both costs, and [`docs/architecture.md`](docs/architecture.md#redis-decides-the-winner-and-postgres-keeps-the-record) gives the numbers.
+One Lua script makes the decision, and I use no transaction. It costs a second language that no type checker reads. It buys two things that four plain commands miss. A second request from a buyer who lost at `INCR` no longer reads `already-bought` for a unit nobody won. A crash right after `INCR` no longer burns a unit. [Why the Redis decision is one script and not a transaction](#why-the-redis-decision-is-one-script-and-not-a-transaction) gives the argument, and `server/test/integration/pipeline.spec.ts` gives the proof.
 
-I make the decision with one Lua script, and I use no transaction. The script costs me a second language that no type checker reads, and it buys two things that four plain commands could not. A parallel request from a buyer who lost at `INCR` no longer reads `already-bought` for a unit nobody won. A crash right after `INCR` no longer burns a unit, because the script writes `sale:outbox` in the same command and a sweep re-sends what Kafka never got. [Why the Redis decision is one script and not a transaction](#why-the-redis-decision-is-one-script-and-not-a-transaction) gives the argument, and `server/test/integration/pipeline.spec.ts` gives the proof.
+SQLite handles 1,000 rows from one process with no container. I use Postgres anyway. A real sale grows past that, and I did not want the design to change when it does. The cost is one container.
 
-Postgres stores the orders. SQLite would handle 1,000 rows from one process without a container, but I use Postgres anyway, and a real sale grows past that. I did not want the design to change when it does. The cost is one container.
+Nothing is mocked. The database is real Postgres. A run starts it in Docker, and a test starts it through testcontainers. The code does not change when the database moves to a managed instance.
 
-Nothing is mocked. The database is real Postgres, a run starts it in Docker, and a test starts it through testcontainers. The code does not change when I move the database to a managed instance.
+The page receives server-sent events. One open connection carries every message, and the page never asks for one. I need one direction only, and a WebSocket adds nothing here. Server-sent events reconnect on their own, and they are plain HTTP.
 
-The page receives server-sent events. The server pushes a message down one open connection, and the page never asks for it. I need one direction only, and a WebSocket would add nothing. Server-sent events reconnect on their own, and they are plain HTTP.
+Two npm workspaces hold the code in one repository. One `npm ci` and one `npm test` cover `server/` and `web/` together. The root `package.json` holds scripts that start other scripts, so a reader has to open that file to see what `npm test` runs. That is the cost I took.
 
-Two npm workspaces hold the code in one repository, and `server/` and `web/` build and test from one root. One `npm ci` and one `npm test` cover both. I put scripts in the root `package.json` that start other scripts. A reader has to open that file to see what `npm test` runs, and that is the cost I took.
-
-I left some things out on purpose. There is no authentication: a username or an email is the whole identity a flash sale needs. No payment, no deployment, no rate limit. A real sale needs a rate limit, but this one does not claim to be one.
+Some things are missing on purpose. There is no authentication, because a username is the whole identity a flash sale needs. No payment, no deployment, no rate limit. A real sale needs a rate limit. This one does not claim to be one.
 
 ## Layout
 

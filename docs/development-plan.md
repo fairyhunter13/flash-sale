@@ -128,7 +128,7 @@ Each row lists the files it owns in the repository as it ships. Where I replaced
 
 ## What changed after the plan was written
 
-I wrote the plan before the code, and two parts changed during the build. The rows already name the files that ship.
+I wrote the plan before the code. Two parts changed during the build. The rows already name the files that ship.
 
 | Planned | Ships | Why it changed |
 | --- | --- | --- |
@@ -142,13 +142,13 @@ Both of the first two rows changed after a measurement. `docs/architecture.md` h
 
 ## What the build found
 
-Six findings came out of the build, but no unit test would have caught them. Each one now has a test behind it.
+Six findings came out of the build. No unit test caught any of them, and each one now has a test behind it.
 
-1. Since `node --experimental-strip-types` only deletes types, `npm start` had never worked. A constructor parameter property is a SyntaxError, and the server held 6 of them. Vitest compiles the TypeScript, and that is why the tests stayed green. No test caught the error. `server/test/unit/strip.spec.ts` now reads every file under `server/src` through `stripTypeScriptTypes`.
-2. The scripts carried no `--env-file`. So `npm start` had never read `.env`. The documented start command stopped at boot and named every missing variable.
+1. `node --experimental-strip-types` only deletes types, and `npm start` never worked. A constructor parameter property is a SyntaxError, and the server held 6 of them. Vitest compiles the TypeScript, and that is why the tests stayed green. No test caught the error. `server/test/unit/strip.spec.ts` now reads every file under `server/src` through `stripTypeScriptTypes`.
+2. The scripts carried no `--env-file`, and `npm start` never read `.env`. The documented start command stopped at boot and named every missing variable.
 3. Two test files shared one `orders` table. They run in parallel and wiped each other's rows. That was the race. Each file now migrates its own Postgres schema.
 4. A timer commit cannot hold the bookmark. `autoCommit` moves the offset on a clock, so a dead worker leaves an offset past a row Postgres never wrote. The bookmark now lives in `queue_offsets`, written in the same transaction as the order row, and `Gate.record` refuses any record below it. An earlier draft of this file claimed a measured loss of 201 of 1,000 rows. No harness for that run survives, and kafkajs 2.2.4 resolves an offset only after `eachMessage` returns, so I removed the number.
-5. The drain check counted the wrong records. A replay and a duplicate buyer are the same record twice, and neither should count. I counted both, and the check reported success at 49 of 50 rows.
+5. The drain check counted the wrong records. A replay and a duplicate buyer are the same record twice, and neither one counts. I counted both, and the check reported success at 49 of 50 rows.
 6. Testing Library cleans up only under `globals: true`. Without `cleanup` in an `afterEach`, 4 of the 7 page tests read `Found multiple elements`.
 
 The stress run empties the sale and truncates the orders table. I keep it on localhost for that reason. `assertLocal` rejects any hostname outside localhost, but `STRESS_ALLOW_HOST` overrides that check.
