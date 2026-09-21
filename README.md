@@ -60,6 +60,8 @@ PASS
 
 `queue drained in 567 ms` is the gap between the last buyer getting an answer and the last order row landing in Postgres. Redis answers the buyer first, and a worker writes the row to Postgres later.
 
+That number grows with the records the topic already holds, so a repeat run reads higher than the first one. Against a new `sale.wins` topic I measured 770 ms and 773 ms. The same build read 1,387 ms, 2,411 ms and 3,078 ms on the third, fourth and fifth run. `npm run db:down` and `npm run db:up` drop the topic and return the number to the first reading.
+
 I measured `4 Postgres backends` at peak against 500 open sockets, with `DB_POOL_MAX` set to 20. Only workers and page reads touch the pool, and the buyer path skips it. See [Scaling](#scaling).
 
 `npm run bench` measures throughput with autocannon, but it skips count checks. Autocannon reads its `amount` as a per-connection quota.

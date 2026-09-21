@@ -138,7 +138,7 @@ I wrote the plan before the code, and two parts changed during the build. The ro
 | D-13 grounds every row of a concept map | dropped | The map was a planning tool. It shipped no behaviour, and its tests read the map rather than the code |
 | Three document tests read the README and the decision log | dropped | A test that reads prose turned red on every edit, and it proved nothing about the sale |
 
-The first two rows come from `docs/design-experiments.md`. That file holds the 9 designs I built and measured, plus the 21 faults I injected into them.
+The first two rows come from `docs/design-experiments.md`. That file holds the 9 designs I built and measured, plus the 22 faults I injected into them.
 
 ## What the build found
 
