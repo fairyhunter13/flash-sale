@@ -16,6 +16,9 @@ export const OUTBOX_KEY = 'sale:outbox'
 /** A win that never reached Kafka waits here. The sweep is the only thing that finds it. */
 const SWEEP_MS = 250
 
+/** Records between two Kafka commits. An uncommitted tail replays, and the fence refuses it. */
+const COMMIT_EVERY = 25
+
 export type PipelineOptions = {
   readonly redisUrl: string
   readonly kafkaBrokers: readonly string[]
@@ -62,6 +65,7 @@ export class Pipeline {
   private readonly shas = new Map<string, string>()
   private sweep: NodeJS.Timeout | undefined
   private sweeping = false
+  private readonly sinceCommit = new Map<number, number>()
   readonly counts: PipelineCounts = {
     produced: 0,
     consumed: 0,
@@ -258,7 +262,8 @@ export class Pipeline {
 
   /**
    * `autoCommit` is off because a timer commits an offset the database never wrote.
-   * The commit below runs after the Postgres transaction, never before it.
+   * The commit below runs after the Postgres transaction, never before it. It runs
+   * once every `COMMIT_EVERY` records, and a commit that never happened replays.
    *
    * There is no `seek`. A replay from any earlier offset meets the fence in
    * `Gate.record`, so the Kafka offset is a resume hint and costs only time.
@@ -290,6 +295,15 @@ export class Pipeline {
         else if (done === 'replayed') this.counts.replayed += 1
         else if (done === 'duplicate-buyer') this.counts.duplicateBuyers += 1
         else this.counts.refusedByDatabase += 1
+        // kafkajs runs one partition in order, so every record up to this one is
+        // already in Postgres. A commit every 25 records is the same claim as a
+        // commit every record, and it costs 1 round trip instead of 25.
+        const seen = (this.sinceCommit.get(partition) ?? 0) + 1
+        if (seen < COMMIT_EVERY) {
+          this.sinceCommit.set(partition, seen)
+          return
+        }
+        this.sinceCommit.set(partition, 0)
         await consumer.commitOffsets([
           { topic, partition, offset: String(Number(message.offset) + 1) },
         ])

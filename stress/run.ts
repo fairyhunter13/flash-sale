@@ -15,6 +15,8 @@ const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://127.0.0.1:6379'
 /** These must match server/src/queue/pipeline.ts. */
 const SOLD_KEY = 'sale:sold'
 const BUYERS_KEY = 'sale:buyers'
+// A win stranded by the last run would be re-sent into this one.
+const OUTBOX_KEY = 'sale:outbox'
 /** How long the run waits for the workers to write the last win into Postgres. */
 const DRAIN_MS = Number(process.env['STRESS_DRAIN_MS'] ?? 60_000)
 const BUYERS = Number(process.env['STRESS_BUYERS'] ?? 10_000)
@@ -52,7 +54,7 @@ async function reset(pool: Pool, redis: RedisLike): Promise<number> {
   )
   const stock = rows[0]?.total_units
   if (stock === undefined) throw new Error('the campaign row is missing. Run npm run db:migrate.')
-  await redis.del([SOLD_KEY, BUYERS_KEY])
+  await redis.del([SOLD_KEY, BUYERS_KEY, OUTBOX_KEY])
   // The running server still holds the old count for one cache window.
   await new Promise((done) => setTimeout(done, CACHE_MS * 2))
   return stock
@@ -178,7 +180,7 @@ async function main(): Promise<void> {
   await redis.connect()
   try {
     const stock = await reset(pool, redis as unknown as RedisLike)
-    console.log(`reset: units_left=${stock}, orders=0 rows, ${SOLD_KEY} and ${BUYERS_KEY} dropped`)
+    console.log(`reset: units_left=${stock}, orders=0 rows, ${SOLD_KEY}, ${BUYERS_KEY} and ${OUTBOX_KEY} dropped`)
     console.log(`driving ${BUYERS} buyers, ${CONNECTIONS} connections`)
 
     const watcher = watchBackends(pool)
