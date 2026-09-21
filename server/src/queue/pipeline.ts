@@ -37,7 +37,7 @@ export type PipelineCounts = {
   consumed: number
   written: number
   replayed: number
-  duplicateBuyers: number
+  alreadyRecorded: number
   refusedByDatabase: number
   refusedByFastPath: number
   losersRemoved: number
@@ -71,7 +71,7 @@ export class Pipeline {
     consumed: 0,
     written: 0,
     replayed: 0,
-    duplicateBuyers: 0,
+    alreadyRecorded: 0,
     refusedByDatabase: 0,
     refusedByFastPath: 0,
     losersRemoved: 0,
@@ -319,7 +319,7 @@ export class Pipeline {
         })
         if (done === 'written') this.counts.written += 1
         else if (done === 'replayed') this.counts.replayed += 1
-        else if (done === 'duplicate-buyer') this.counts.duplicateBuyers += 1
+        else if (done === 'already-recorded') this.counts.alreadyRecorded += 1
         else this.counts.refusedByDatabase += 1
         // Postgres holds this record now. The timer below commits the number,
         // and no commit runs inside the handler.

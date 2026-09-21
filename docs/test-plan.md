@@ -119,6 +119,12 @@ Action: `Pipeline.rehydrate` runs.
 Expected result: `sale:sold` stays at 3.
 Postcondition: the next buyer gets place 4, and no place is sold twice.
 
+S-23 A place the table already holds never stops the worker.
+Precondition: one order row holds place 1, and the queue holds a second buyer on place 1.
+Action: a worker reads that record.
+Expected result: `Gate.record` answers `already-recorded`, and it raises no error.
+Postcondition: the order table and the unit count do not move, and the resume point moves by 1.
+
 S-11 A store does not answer.
 Precondition: the database is unreachable.
 Action: a buyer sends a purchase.
@@ -215,6 +221,7 @@ Postcondition: no source file holds syntax that strip-only mode refuses.
 | T-46 | A win left in the outbox reaches the database after one sweep | S-20 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a win left in the outbox reaches the database after one sweep | 13 | engine |
 | T-47 | No buyer is told already-bought for a unit they never won | S-21 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > no buyer is told already-bought for a unit they never won | 12 | engine |
 | T-48 | A rebuild never lowers the counter | S-22 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a rebuild never lowers the counter | 7 | engine |
+| T-49 | A second buyer on a place already taken never stops the worker | S-23 | D-08 | done | server/test/integration/gate.spec.ts > the gate > a second buyer on a place already taken is refused, and the worker moves on | 15 | engine |
 | T-36 | Every server source file runs under strip-only mode | S-18 | D-01 | done | server/test/unit/strip.spec.ts > the source runs under node > every server source file strips cleanly | 10 | route |
 | T-37 | A lost Redis is rebuilt from the order rows | S-17 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a lost Redis is rebuilt from the order rows, and the next place is right | 14 | engine |
 | T-38 | The Buy Now button is refused while the sale is not open | S-03 | D-10 | done | web/test/unit/App.spec.tsx > the page > the button is refused while the sale is not open | 12 | unit |

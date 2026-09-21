@@ -63,11 +63,22 @@ describe('the gate', () => {
   it('the same buyer in a second record takes no second unit', async () => {
     expect(await gate.record(win('buyer-a', 1))).toBe('written')
 
-    expect(await gate.record(win('buyer-a', 2))).toBe('duplicate-buyer')
+    expect(await gate.record(win('buyer-a', 2))).toBe('already-recorded')
 
     expect(await orderCount()).toBe(1)
     expect(await gate.stockLeft()).toBe(999)
     // The record is consumed, so the worker never reads it again.
+    expect(await gate.offsetOf(TOPIC, 0)).toBe(2)
+  })
+
+  it('a second buyer on a place already taken is refused, and the worker moves on', async () => {
+    expect(await gate.record(win('buyer-a', 1))).toBe('written')
+
+    // Only a Redis that lost its counter mid-sale issues place 1 a second time.
+    expect(await gate.record(win('buyer-b', 1))).toBe('already-recorded')
+
+    expect(await orderCount()).toBe(1)
+    expect(await gate.stockLeft()).toBe(999)
     expect(await gate.offsetOf(TOPIC, 0)).toBe(2)
   })
 

@@ -21,7 +21,8 @@ export type Win = {
   readonly offset: number
 }
 
-export type Recorded = 'written' | 'replayed' | 'duplicate-buyer' | 'no-unit-left'
+/** `already-recorded` covers both unique constraints: a repeat buyer and a taken place. */
+export type Recorded = 'written' | 'replayed' | 'already-recorded' | 'no-unit-left'
 
 // Matches the SSE tick, so an open page never sees a number older than one tick.
 export const CACHE_MS = 250
@@ -44,8 +45,10 @@ const BUMP_OFFSET = `INSERT INTO queue_offsets (topic, partition, next_offset) V
    ON CONFLICT (topic, partition)
    DO UPDATE SET next_offset = GREATEST(queue_offsets.next_offset, EXCLUDED.next_offset)`
 
+// The bare `ON CONFLICT` covers `orders_seq_key` as well as `orders_user_id_key`.
+// Named, a repeat `seq` raised 23505, and the partition then wedged for good.
 const TAKE_BUYER =
-  'INSERT INTO orders (user_id, seq) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING RETURNING user_id'
+  'INSERT INTO orders (user_id, seq) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING user_id'
 
 // Postgres holds the one stock row for the transaction. A second worker reads the
 // count only after the first commits. The `units_left > 0` check cannot oversell.
@@ -115,7 +118,7 @@ export class Gate {
       if (taken.rowCount === 0) {
         await client.query(BUMP_OFFSET, ahead)
         await client.query('COMMIT')
-        return 'duplicate-buyer'
+        return 'already-recorded'
       }
 
       const unit = await client.query<{ units_left: number }>(TAKE_UNIT)

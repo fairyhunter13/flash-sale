@@ -24,9 +24,9 @@ Run `npm run db:migrate`. The command `npm start` also runs the migrations, and 
 
 `.env` holds addresses and sizes only. Postgres, Redis or Kafka may already run on your machine. If one already runs, change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT`, and change the URL beside it.
 
-`npm test` runs all 71 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
+`npm test` runs all 72 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
 
-The 48 integration tests use real Postgres, Redis and Kafka through testcontainers, and I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
+The 49 integration tests use real Postgres, Redis and Kafka through testcontainers, and I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
 
 `npm run dev` runs the server and Vite together. Vite serves the page on `http://127.0.0.1:5173`, and it also proxies `/api` requests to the server.
 
@@ -160,7 +160,7 @@ Postgres refuses the oversell a second time. `Gate.record` runs one transaction 
 
 1. `INSERT INTO queue_offsets ... ON CONFLICT DO NOTHING`, then
    `SELECT next_offset ... FOR UPDATE`. Every path grabs this lock first. Two workers on one partition then run one after the other. When the lock came second, it deadlocked against the stock row. I first saw that deadlock at 100 parallel records. A record whose offset is below `next_offset` stops here and answers `replayed`, because the database already applied it.
-2. `INSERT INTO orders (user_id, seq) ... ON CONFLICT (user_id) DO NOTHING RETURNING user_id`. If no row comes back, the database already holds a record for that buyer. The buyer is a repeat, and a repeat takes no second unit from the count.
+2. `INSERT INTO orders (user_id, seq) ... ON CONFLICT DO NOTHING RETURNING user_id`. If no row comes back, the table already holds that buyer or that place. Neither one takes a second unit from the count. The clause names no constraint, so it covers `orders_seq_key` as well as `orders_user_id_key`. Named, a repeat place raised `23505` and stopped the partition for good.
 3. `UPDATE stock SET units_left = units_left - 1 WHERE id = 1 AND units_left > 0 RETURNING
    units_left`. If no row comes back, the database holds fewer units than the queue holds wins. That is the oversell I refuse here.
 
@@ -210,7 +210,7 @@ I ran this on a box with an Intel Core Ultra 9 275HX, 24 cores, 62 GB RAM and No
 | `GET /api/sale` throughput | 31,991 a second, p50 13 ms, p99 51 ms | `npm run bench` |
 | `POST /api/purchase` throughput | 33,274 a second, p50 13 ms, p99 31 ms | `npm run bench` |
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
-| Tests | 71 over 11 files: 23 unit, 48 integration against real Postgres, Redis and Kafka | `npm test` |
+| Tests | 72 over 11 files: 23 unit, 49 integration against real Postgres, Redis and Kafka | `npm test` |
 
 The purchase route is as fast as the read route, and Redis answers both. The earlier version opened a Postgres transaction on every purchase and ran at 11,529 a second. Redis raised the refusal path by 2.9 times.
 
@@ -276,7 +276,7 @@ stress/   the correctness run, and the throughput bench
 | High throughput, and a design that scales | the Measured and Scaling sections. Each number names its command. The write is already off the request path |
 | Robustness and fault tolerance | a slow database costs drain time and no answers. A rolled-back transaction writes no order. A lost Redis is rebuilt from the order rows, and `max(seq)` gives the next place, never the row count |
 | Concurrency control, with no overselling | `INCR` in Redis, then the row lock in the `UPDATE`, proved by the 10,000-buyer run and by 21 injected faults |
-| Unit and integration tests | 23 unit tests in `server/test/unit/` and `web/test/unit/`, run by `npm run test:unit`. 48 integration tests in `server/test/integration/` and `web/test/integration/`, run by `npm run test:integration` against real Postgres, Redis and Kafka through testcontainers |
+| Unit and integration tests | 23 unit tests in `server/test/unit/` and `web/test/unit/`, run by `npm run test:unit`. 49 integration tests in `server/test/integration/` and `web/test/integration/`, run by `npm run test:integration` against real Postgres, Redis and Kafka through testcontainers |
 | Stress tests, and an explanation of the results | `npm run stress` for the counts, `npm run bench` for the speed, and the Measured section for the reading |
 | TypeScript, Node with Fastify, React | all three, type checked by `npm run build` |
 | Ready for managed services | every store is a managed product, and nothing is mocked. `docs/design-experiments.md` holds the 9 measured designs. The Scaling section holds the target picture |
