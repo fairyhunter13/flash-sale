@@ -2,7 +2,7 @@ import { Kafka, Partitioners, type Admin, type Consumer, type Producer } from 'k
 import { createClient, type RedisClientType } from 'redis'
 import type { Gate, SaleNumbers } from '../gate/gate.ts'
 import { saleState, type Outcome } from '../gate/status.ts'
-import { REHYDRATE, RESERVE } from './scripts.ts'
+import { REHYDRATE, RESERVE, RETIRE } from './scripts.ts'
 
 export const TOPIC = 'sale.wins'
 export const PARTITIONS = 4
@@ -51,6 +51,8 @@ export type PipelineCounts = {
   refusedByDatabase: number
   refusedByFastPath: number
   losersRemoved: number
+  /** Every rebuild from the order rows. A closed sale must never add one. */
+  rebuilds: number
 }
 
 /**
@@ -89,6 +91,7 @@ export class Pipeline {
     refusedByDatabase: 0,
     refusedByFastPath: 0,
     losersRemoved: 0,
+    rebuilds: 0,
   }
 
   private constructor(options: PipelineOptions) {
@@ -134,7 +137,7 @@ export class Pipeline {
       })
     }
     await pipeline.producer.connect()
-    for (const source of [RESERVE, REHYDRATE]) pipeline.shas.set(source, await pipeline.redis.scriptLoad(source))
+    for (const source of [RESERVE, REHYDRATE, RETIRE]) pipeline.shas.set(source, await pipeline.redis.scriptLoad(source))
     await pipeline.restoreIfEmpty()
     // The sweep starts after the rebuild, or it reads a hash that `rehydrate` is clearing.
     pipeline.sweep = setInterval(() => void pipeline.sweepOutbox(), SWEEP_MS)
@@ -201,8 +204,14 @@ export class Pipeline {
     await this.restoring
   }
 
+  /**
+   * Redis decides while the sale runs, so the counter answers first. A retired sale
+   * has no counter, and Postgres holds the final count from then on.
+   */
   async left(): Promise<number> {
-    return Math.max(0, this.stock - Number((await this.redis.get(this.soldKey)) ?? 0))
+    const sold = await this.redis.get(this.soldKey)
+    if (sold === null) return this.gate.stockLeft()
+    return Math.max(0, this.stock - Number(sold))
   }
 
   /** A refused buyer is removed, so this follows the stock, not the traffic. */
@@ -232,6 +241,7 @@ export class Pipeline {
    */
   async rehydrate(): Promise<{ buyers: number; highestSeq: number; ms: number }> {
     const startedAt = Date.now()
+    this.counts.rebuilds += 1
     const winners = await this.gate.winners()
     const highest = winners.reduce((top, one) => Math.max(top, one.seq), 0)
     await this.runScript(
@@ -296,6 +306,7 @@ export class Pipeline {
       await this.rebuildIfBehind()
       const stranded = await this.redis.hGetAll(this.outboxKey)
       for (const [buyerId, seq] of Object.entries(stranded)) await this.deliver(buyerId, Number(seq))
+      await this.retireIfOver()
     } catch (error) {
       console.error(`outbox sweep failed: ${(error as Error).message}`)
     } finally {
@@ -314,6 +325,32 @@ export class Pipeline {
     this.window = { startMs: sale.startMs, endMs: sale.endMs }
   }
 
+  /** The clock alone closes a sale, so the count is not given a vote here. */
+  private isClosed(nowMs: number = Date.now()): boolean {
+    return saleState(nowMs, 1, this.window) === 'closed'
+  }
+
+  /**
+   * The sale is over, so Redis holds nothing that Postgres does not hold. The keys go,
+   * and the memory goes with them. `orders` and `stock` are the record from then on.
+   *
+   * The script refuses while a win is still in flight, so a slow worker delays the
+   * drop to the next sweep and never loses a place.
+   */
+  private async retireIfOver(): Promise<void> {
+    if (!this.isClosed()) return
+    const dropped = Number(
+      await this.runScript(
+        RETIRE,
+        [this.buyersKey, this.soldKey, this.outboxKey, this.liveKey, this.issuedKey],
+        [],
+      ),
+    )
+    if (dropped > 0) {
+      console.log(`The sale is over, so ${dropped} Redis keys were dropped. Postgres holds the result.`)
+    }
+  }
+
   /**
    * Redis issues the place, and Postgres records it later. So `sale:sold` is never below
    * the highest place on disk while Redis is whole. Below it, Redis lost the counter, and
@@ -325,6 +362,9 @@ export class Pipeline {
    * `MAX(seq)` read every 250 ms.
    */
   private async rebuildIfBehind(): Promise<void> {
+    // A closed sale gives its keys up on purpose, so a rebuild here would write all
+    // five back on the next sweep, and the sale would never retire.
+    if (this.isClosed()) return
     const sold = Number((await this.redis.get(this.soldKey)) ?? 0)
     if (sold >= (await this.gate.highestSeq())) return
     await this.restore()
@@ -336,6 +376,9 @@ export class Pipeline {
    */
   private async restoreIfEmpty(): Promise<void> {
     if ((await this.redis.exists(this.liveKey)) === 1) return
+    // A restart after the sale closed reads the result from Postgres, so it needs
+    // no hot state. Without this check every restart puts the keys back.
+    if (this.isClosed()) return
     const restored = await this.rehydrate()
     if (restored.buyers > 0) {
       console.warn(`Redis held no sale, so it was rebuilt from ${restored.buyers} order rows in ${restored.ms} ms.`)

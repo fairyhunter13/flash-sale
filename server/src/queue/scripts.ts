@@ -74,3 +74,19 @@ end
 redis.call('SET', live, '1')
 return redis.call('GET', sold) or '0'
 `
+
+/**
+ * KEYS: buyers, sold, outbox, live, issued. Returns the number of keys it dropped.
+ *
+ * It refuses while either hash holds a row, because a row there is a win Postgres
+ * does not hold yet. So the sale gives its keys up only after Postgres has all of it.
+ */
+export const RETIRE = `
+local buyers, sold, outbox, live, issued = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]
+
+if redis.call('EXISTS', live) == 0 then return 0 end
+if redis.call('HLEN', outbox) > 0 then return 0 end
+if redis.call('HLEN', issued) > 0 then return 0 end
+
+return redis.call('DEL', buyers, sold, outbox, live, issued)
+`

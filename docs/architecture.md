@@ -90,9 +90,27 @@ the sold-out check, and a buyer who loses at `INCR` leaves the set again through
 takes a winner alone, and it stops at the stock. README records the measured run. The two hashes
 empty as each win lands, so they hold what is in flight and nothing more.
 
-**The keys outlive the sale, and that is the one trap.** A second campaign on the same Redis reads
-the first campaign's counter and answers `sold-out`. `npm run reset` clears Redis and starts again.
-`npm run sale:window` prints the same reminder when it moves the unit count.
+The keys do not outlive the sale either. The 250 ms sweep runs a third script, `RETIRE`, once the
+window closes. It drops all 5 keys in one command, and it refuses while `sale:outbox` or
+`sale:issued` holds a row. A row in either hash is a win that Postgres does not hold yet. So a slow worker
+delays the drop by one sweep, and it never costs a place. Redis then holds nothing.
+
+The same sweep stops rebuilding a closed sale, and that stop is what makes the drop stick. Without
+it the sweep reads `sale:sold`, finds no counter, decides Redis is behind Postgres, and writes all
+5 keys back. It repeats that 4 times a second for as long as the process runs. A counter in
+`Pipeline.counts.rebuilds` makes the repeat visible, and a test reads it.
+
+`Pipeline.left` then finds no counter and reads `stock.units_left` instead. Postgres was the
+permanent record the whole time, so the number `GET /api/sale` answers after the sale is the final
+one.
+
+**The trap is in Postgres, and not in Redis.** The order rows outlive the campaign that wrote them.
+A second campaign against the same database starts sold out. The first rebuild reads the old
+winners out of `orders`, and it puts the counter back where the last sale ended.
+`UNIQUE (user_id)` refuses a returning winner as well. `npm run sale:window` moves the window and the unit count, and
+it touches neither of those. `npm run reset` drops Postgres, Redis and the Kafka topic together,
+and it is the only clean start. The Kafka topic matters as much as the rows. A worker subscribes
+with `fromBeginning`, so an old topic replays the first campaign's wins into the second one.
 
 ## The unique index on the buyer is a second guard
 

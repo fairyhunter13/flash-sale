@@ -70,7 +70,7 @@ async function main(): Promise<void> {
         `with ${row.units_left} of ${row.total_units} units left.`,
     )
     if (wanted.units !== undefined) {
-      console.log('The unit count moved, so clear Redis before the sale opens: npm run reset')
+      console.log('The unit count moved. The old order rows hold the last sale, so a second campaign needs: npm run reset')
     }
   } finally {
     await pool.end()

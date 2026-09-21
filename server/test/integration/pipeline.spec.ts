@@ -352,4 +352,39 @@ describe('the pipeline', () => {
       await redis.quit()
     }
   })
+
+  it('the sale drops every Redis key once the window closes, and Postgres answers from then on', async () => {
+    const { pipeline, namespace } = await start(10)
+    await Promise.all(['a', 'b', 'c'].map((one) => pipeline.reserve(one, DURING)))
+    expect(await pipeline.drained()).toBe(true)
+
+    // The sweep reads the window from Postgres every 250 ms, so an end in the past
+    // closes the sale with no restart. UPDATE keeps the 7 units the sale has left.
+    await pool.query('UPDATE stock SET end_at = $1 WHERE id = 1', [new Date(DURING)])
+
+    const redis = createClient({ url: inject('redisUrl') })
+    await redis.connect()
+    try {
+      const tail = `.${namespace}`
+      let found = await redis.keys(`*${tail}`)
+      for (let tries = 0; tries < 40 && found.length > 0; tries += 1) {
+        await new Promise((ready) => setTimeout(ready, 100))
+        found = await redis.keys(`*${tail}`)
+      }
+      expect(found).toEqual([])
+
+      // The counter is gone, so a wrong read path would answer 10 here.
+      expect(await pipeline.left()).toBe(7)
+      expect(await pipeline.reserve('late', Date.now())).toBe('over')
+
+      // A retired sale must not rebuild. Without the guard the sweep reads every
+      // order row and writes all five keys back, 4 times a second, for good.
+      const before = pipeline.counts.rebuilds
+      await new Promise((ready) => setTimeout(ready, 800))
+      expect(pipeline.counts.rebuilds).toBe(before)
+      expect(await redis.keys(`*${tail}`)).toEqual([])
+    } finally {
+      await redis.quit()
+    }
+  })
 })
