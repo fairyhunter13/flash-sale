@@ -104,6 +104,19 @@ it the sweep reads `sale:sold`, finds no counter, decides Redis is behind Postgr
 permanent record the whole time, so the number `GET /api/sale` answers after the sale is the final
 one.
 
+The same guard runs at the other end of the window. `Pipeline.phase` reads the clock and answers
+`before`, `live` or `after`, and only the `live` phase builds anything. `armIfDue` then writes the
+5 keys `ARM_MS` before the start time, which is 5 seconds. A pending sale therefore holds no key
+at all, and the first buyer of the crowd finds the counter already there.
+
+The count gets no vote in that decision. A sold-out sale is still live, and it keeps its keys until
+the clock closes the window. A count that closes the sale breaks on the next erase. The
+rebuild finds 0 sold, and it reopens a sale that already ended.
+
+The proof is a load run and not a unit test alone. `npm run stress` sends 10,000 buyers at 1,000
+units, moves the end time into the past, then reads Redis until it empties. The peak was 48,416
+bytes over 5 keys, and the drop landed 157 ms after the close with all 1,000 rows in Postgres.
+
 **The trap is in Postgres, and not in Redis.** The order rows outlive the campaign that wrote them.
 A second campaign against the same database starts sold out. The first rebuild reads the old
 winners out of `orders`, and it puts the counter back where the last sale ended.

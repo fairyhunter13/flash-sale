@@ -24,7 +24,7 @@ I tested the Redis pipeline, the four routes, the Kafka workers, the page and th
 
 The tier decides the folder. A `unit` case lives in `server/test/unit/` and `web/test/unit/`, and `npm run test:unit` runs those 23 while Docker is stopped.
 
-A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 56. `npm test` runs all 79.
+A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 57. `npm test` runs all 80.
 
 I left four things out.
 
@@ -167,6 +167,12 @@ Action: move the end time into the past, then wait for the sweep.
 Expected result: no key with this sale's suffix is left, and the unit count still reads 7.
 Postcondition: the sweep starts no rebuild, so the keys stay gone.
 
+S-31 A sale that has not opened holds no Redis key.
+Precondition: the window starts in one hour, and no buyer has asked yet.
+Action: let the sweep run three times, then send one purchase.
+Expected result: the buyer reads `not-open`, and no key with this sale's suffix is present.
+Postcondition: the unit count comes from Postgres, because no counter exists.
+
 S-11 A store does not answer.
 Precondition: the database is unreachable.
 Action: a buyer sends a purchase.
@@ -222,6 +228,7 @@ Postcondition: no source file holds syntax that strip-only mode refuses.
 | T-01 | Every workspace builds and the types check | — | D-01, D-10 | done | `npm run build` | 6 | unit |
 | T-02 | The schema creates the table and the unique index | — | D-02 | done | server/test/integration/schema.spec.ts > the order table > the order table refuses a duplicate user | 12 | engine |
 | T-56 | A closed sale drops all 5 Redis keys, and Postgres answers the count | S-30 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > the sale drops every Redis key once the window closes, and Postgres answers from then on | 13 | engine |
+| T-57 | A pending sale writes no Redis key, and the count comes from Postgres | S-31 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a sale that has not opened writes no Redis key at all | 13 | engine |
 | T-03 | The boot stops when a store address is missing, and the sale is not read here | — | D-03 | done | server/test/unit/config.spec.ts > the configuration > a missing DATABASE_URL stops the boot | 8 | unit |
 | T-04 | Two buyers race for one unit, and one wins | S-01 | D-04, D-05 | done | server/test/integration/pipeline.spec.ts > the pipeline > a buyer who lost is told sold-out again, and holds no place in the set | 25 | engine |
 | T-05 | A repeat buyer is refused with the right reason | S-02 | D-04, D-05 | done | server/test/integration/pipeline.spec.ts > the pipeline > a winner who asks again is told already-bought | 20 | engine |

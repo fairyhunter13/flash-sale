@@ -26,6 +26,12 @@ export const LIVE_KEY = 'sale:live'
 /** A win that never reached Kafka waits here. The sweep is the only thing that finds it. */
 const SWEEP_MS = 250
 
+/**
+ * How long before the window opens Redis takes the sale on. The first buyer of a flash sale
+ * arrives with the rest of the crowd, and a rebuild on that request costs them a Postgres read.
+ */
+const ARM_MS = 5_000
+
 /** How often a worker saves its place in the queue. Anything past the last save replays. */
 const COMMIT_MS = 1_000
 
@@ -138,7 +144,7 @@ export class Pipeline {
     }
     await pipeline.producer.connect()
     for (const source of [RESERVE, REHYDRATE, RETIRE]) pipeline.shas.set(source, await pipeline.redis.scriptLoad(source))
-    await pipeline.restoreIfEmpty()
+    await pipeline.armIfDue()
     // The sweep starts after the rebuild, or it reads a hash that `rehydrate` is clearing.
     pipeline.sweep = setInterval(() => void pipeline.sweepOutbox(), SWEEP_MS)
     pipeline.sweep.unref()
@@ -303,6 +309,7 @@ export class Pipeline {
     this.sweeping = true
     try {
       await this.refreshCampaign()
+      await this.armIfDue()
       await this.rebuildIfBehind()
       const stranded = await this.redis.hGetAll(this.outboxKey)
       for (const [buyerId, seq] of Object.entries(stranded)) await this.deliver(buyerId, Number(seq))
@@ -325,9 +332,14 @@ export class Pipeline {
     this.window = { startMs: sale.startMs, endMs: sale.endMs }
   }
 
-  /** The clock alone closes a sale, so the count is not given a vote here. */
-  private isClosed(nowMs: number = Date.now()): boolean {
-    return saleState(nowMs, 1, this.window) === 'closed'
+  /**
+   * Redis carries the sale in the `live` phase alone. The clock decides it, so the count is
+   * given no vote: a sold-out sale is still live, and its keys stay until the window closes.
+   */
+  private phase(nowMs: number = Date.now()): 'before' | 'live' | 'after' {
+    if (nowMs > this.window.endMs) return 'after'
+    if (nowMs < this.window.startMs - ARM_MS) return 'before'
+    return 'live'
   }
 
   /**
@@ -338,7 +350,7 @@ export class Pipeline {
    * drop to the next sweep and never loses a place.
    */
   private async retireIfOver(): Promise<void> {
-    if (!this.isClosed()) return
+    if (this.phase() !== 'after') return
     const dropped = Number(
       await this.runScript(
         RETIRE,
@@ -362,27 +374,26 @@ export class Pipeline {
    * `MAX(seq)` read every 250 ms.
    */
   private async rebuildIfBehind(): Promise<void> {
-    // A closed sale gives its keys up on purpose, so a rebuild here would write all
-    // five back on the next sweep, and the sale would never retire.
-    if (this.isClosed()) return
+    // Outside the window Redis holds no sale on purpose, so a rebuild here writes all
+    // five keys back and the sale never stays retired.
+    if (this.phase() !== 'live') return
     const sold = Number((await this.redis.get(this.soldKey)) ?? 0)
     if (sold >= (await this.gate.highestSeq())) return
     await this.restore()
   }
 
   /**
-   * No `sale:live` flag means Redis never held this sale, or it lost it. Rebuild then,
-   * and write the flag. A live Redis runs ahead of Postgres by what the queue holds.
+   * Builds the hot state from the order rows once the window is due, and never before.
+   * Redis then holds nothing at all until the sale needs it, and nothing after it ends.
+   *
+   * It runs at boot and on every sweep, so a server that starts hours early still arms
+   * on time, and `npm run sale:window` moves the moment with no restart.
    */
-  private async restoreIfEmpty(): Promise<void> {
+  private async armIfDue(): Promise<void> {
+    if (this.phase() !== 'live') return
     if ((await this.redis.exists(this.liveKey)) === 1) return
-    // A restart after the sale closed reads the result from Postgres, so it needs
-    // no hot state. Without this check every restart puts the keys back.
-    if (this.isClosed()) return
-    const restored = await this.rehydrate()
-    if (restored.buyers > 0) {
-      console.warn(`Redis held no sale, so it was rebuilt from ${restored.buyers} order rows in ${restored.ms} ms.`)
-    }
+    const armed = await this.rehydrate()
+    console.log(`The sale is due, so Redis took it on from ${armed.buyers} order rows in ${armed.ms} ms.`)
   }
 
   /**

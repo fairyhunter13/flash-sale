@@ -18,6 +18,10 @@ const BUYERS_KEY = 'sale:buyers'
 // A win stranded by the last run would be re-sent into this one.
 const OUTBOX_KEY = 'sale:outbox'
 const ISSUED_KEY = 'sale:issued'
+const LIVE_KEY = 'sale:live'
+const KEYS = [SOLD_KEY, BUYERS_KEY, OUTBOX_KEY, ISSUED_KEY, LIVE_KEY]
+/** How long the retire check waits for the sweep to drop the keys. */
+const RETIRE_MS = Number(process.env['STRESS_RETIRE_MS'] ?? 30_000)
 /** How long the run waits for the workers to write the last win into Postgres. */
 const DRAIN_MS = Number(process.env['STRESS_DRAIN_MS'] ?? 60_000)
 const BUYERS = Number(process.env['STRESS_BUYERS'] ?? 10_000)
@@ -50,18 +54,56 @@ type Tally = Record<string, number>
  */
 async function reset(pool: Pool, redis: RedisLike): Promise<number> {
   await pool.query('TRUNCATE orders')
+  // The window is reopened because the last run closed it to prove the retire. Without
+  // this line a second run reads `over` 10,000 times.
   const { rows } = await pool.query<{ total_units: number }>(
-    'UPDATE stock SET units_left = total_units WHERE id = 1 RETURNING total_units',
+    `UPDATE stock SET units_left = total_units, start_at = now() - interval '1 minute',
+       end_at = now() + interval '1 hour' WHERE id = 1 RETURNING total_units`,
   )
   const stock = rows[0]?.total_units
   if (stock === undefined) throw new Error('the campaign row is missing. Run npm start first.')
-  await redis.del([SOLD_KEY, BUYERS_KEY, OUTBOX_KEY, ISSUED_KEY])
+  await redis.del(KEYS)
   // The running server still holds the old count for one cache window.
   await new Promise((done) => setTimeout(done, CACHE_MS * 2))
   return stock
 }
 
-type RedisLike = { del: (keys: string[]) => Promise<number>; quit: () => Promise<unknown> }
+type RedisLike = {
+  del: (keys: string[]) => Promise<number>
+  keys: (pattern: string) => Promise<string[]>
+  memoryUsage: (key: string) => Promise<number | null>
+  quit: () => Promise<unknown>
+}
+
+/** What the 5 keys cost right now. A missing key costs nothing. */
+async function redisBytes(redis: RedisLike): Promise<number> {
+  let total = 0
+  for (const key of KEYS) total += (await redis.memoryUsage(key)) ?? 0
+  return total
+}
+
+/**
+ * The sale is over, so the sweep drops every key and Postgres keeps the result. This is the
+ * proof under load: the keys go after 10,000 buyers, and not only after 3 in a test.
+ */
+async function retire(
+  pool: Pool,
+  redis: RedisLike,
+): Promise<{ left: number; ms: number; unitsLeft: number }> {
+  const startedAt = performance.now()
+  await pool.query(`UPDATE stock SET end_at = now() - interval '1 second' WHERE id = 1`)
+  let left = await redis.keys('sale:*')
+  const until = startedAt + RETIRE_MS
+  while (left.length > 0 && performance.now() < until) {
+    await new Promise((done) => setTimeout(done, 50))
+    left = await redis.keys('sale:*')
+  }
+  return {
+    left: left.length,
+    ms: Math.round(performance.now() - startedAt),
+    unitsLeft: await unitsLeft(pool),
+  }
+}
 
 /**
  * Redis answers `won` before the row lands. A count read at the end of the drive is short.
@@ -180,8 +222,9 @@ async function main(): Promise<void> {
   const redis = createClient({ url: REDIS_URL })
   await redis.connect()
   try {
-    const stock = await reset(pool, redis as unknown as RedisLike)
-    console.log(`reset: units_left=${stock}, orders=0 rows, ${SOLD_KEY}, ${BUYERS_KEY}, ${OUTBOX_KEY} and ${ISSUED_KEY} dropped`)
+    const hot = redis as unknown as RedisLike
+    const stock = await reset(pool, hot)
+    console.log(`reset: units_left=${stock}, orders=0 rows, ${KEYS.length} Redis keys dropped, window reopened`)
     console.log(`driving ${BUYERS} buyers, ${CONNECTIONS} connections`)
 
     const watcher = watchBackends(pool)
@@ -191,12 +234,23 @@ async function main(): Promise<void> {
     const drained = await drain(pool, stock)
     console.log(`queue drained in ${drained.ms} ms`)
 
+    const peakBytes = await redisBytes(hot)
+    const retired = await retire(pool, hot)
+    console.log(
+      `Redis held ${peakBytes} bytes over ${KEYS.length} keys at the end of the sale, ` +
+        `and the sweep dropped them ${retired.ms} ms after the window closed`,
+    )
+
     const checks: Check[] = [
       { name: 'won', got: tally['won'] ?? 0, want: stock },
       { name: 'sold-out', got: tally['sold-out'] ?? 0, want: BUYERS - stock },
       { name: 'other', got: BUYERS - (tally['won'] ?? 0) - (tally['sold-out'] ?? 0), want: 0 },
       { name: 'units left', got: await unitsLeft(pool), want: 0 },
       { name: 'pg orders', got: drained.rows, want: stock },
+      { name: 'redis keys after', got: retired.left, want: 0 },
+      { name: 'redis bytes after', got: await redisBytes(hot), want: 0 },
+      // Postgres holds the result once Redis holds nothing.
+      { name: 'pg units after', got: retired.unitsLeft, want: 0 },
     ]
 
     const passed = report(checks, tally, seconds, peak)

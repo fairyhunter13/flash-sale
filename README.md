@@ -41,9 +41,9 @@ Without `--units` the unit count does not move, so a running sale keeps what it 
 
 `.env.example` holds addresses and sizes only, and the server reads it on every start. Postgres, Redis or Kafka may already run on your machine. Where one does, copy `.env.example` to `.env`, then change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT` and the URL beside it. The server reads `.env` second, so it wins. Docker Compose reads `.env` as well, which is why a port change belongs there and not in `.env.example`.
 
-`npm test` runs all 79 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
+`npm test` runs all 80 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
 
-The 56 integration tests use real Postgres, Redis and Kafka. Testcontainers starts each one in Docker for the run and throws it away after. I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
+The 57 integration tests use real Postgres, Redis and Kafka. Testcontainers starts each one in Docker for the run and throws it away after. I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
 
 `npm run dev` starts the containers, then runs the server and Vite together. Vite serves the page on `http://127.0.0.1:5173`, and it also proxies `/api` requests to the server. The server reloads when you save a file.
 
@@ -153,6 +153,10 @@ No key carries an expiry, so `TTL` answers `-1` on each of the 5. Redis holds th
 
 A clock is the wrong tool here, but the sale still has to give the memory back. So the sale drops all 5 keys itself once the window closes and every win has reached Postgres. Redis then holds nothing at all, and `GET /api/sale` reads the final count from `stock.units_left` instead. Postgres is the permanent record the whole time. Redis is the hot copy, and it lives only as long as the sale runs. See [No key expires, and the stock is what bounds them](docs/architecture.md#no-key-expires-and-the-stock-is-what-bounds-them).
 
+The start of the window works the same way. Redis takes the sale on 5 seconds before the start time, and it holds nothing before that. `ARM_MS` in `server/src/queue/pipeline.ts` is that lead. The sweep reads the window from Postgres 4 times a second. So a server that starts hours early still waits, and it builds the keys 5 seconds before the sale opens. The memory exists inside the sale alone, which is the one window where a big number is expected.
+
+I proved the drop under load. `npm run stress` drives 10,000 buyers at 1,000 units, closes the window, then waits for the sweep. Redis held 48,416 bytes over 5 keys at the peak. It held 0 bytes 157 ms later, and Postgres kept all 1,000 order rows.
+
 That leaves one trap, and it is in Postgres and not in Redis. The order rows outlive the campaign that wrote them. So a second campaign against the same database starts sold out. The first rebuild reads the old winners out of `orders`. It then sets the counter back to where the last sale ended. `UNIQUE (user_id)` also refuses a buyer who won the first time. Moving the window with `npm run sale:window` does not touch any of that. `npm run reset` drops Postgres, Redis and the Kafka topic together, and it is the only clean start for a second campaign.
 
 `Gate.record` in `server/src/gate/gate.ts` writes the permanent state: it writes the order row, takes the unit and moves the queue resume point. I wrap all three in one Postgres transaction. The `no-unit-left` path is the one exception: it rolls the transaction back, then moves the resume point on its own.
@@ -235,7 +239,7 @@ I ran this on a box with an Intel Core Ultra 9 275HX, 24 cores, 62 GB RAM and No
 | `GET /api/sale` throughput | 30,167 to 32,309 a second over 3 runs, p50 13 to 14 ms, p99 54 to 58 ms | `npm run bench` |
 | `POST /api/purchase` throughput | 28,358 to 29,331 a second over 3 runs, p50 16 ms, p99 26 to 32 ms | `npm run bench` |
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
-| Tests | 79 over 11 files: 23 unit, 56 integration against real Postgres, Redis and Kafka | `npm test` |
+| Tests | 80 over 11 files: 23 unit, 57 integration against real Postgres, Redis and Kafka | `npm test` |
 
 Redis answers both routes, and the purchase route runs within 12% of the read route. An earlier version opened a Postgres transaction on every purchase and ran at 11,529 a second. Redis raised the refusal path by 2.5 times.
 
@@ -312,7 +316,7 @@ stress/   the correctness run, and the throughput bench
 | High throughput, and a design that scales | the Measured and Scaling sections. Each number names its command. The write is already off the request path |
 | Robustness and fault tolerance | a slow database costs drain time and no answers. A rolled-back transaction writes no order. A lost Redis is rebuilt from the order rows, and `max(seq)` gives the next place, never the row count |
 | Concurrency control, with no overselling | `INCR` in Redis, then the row lock in the `UPDATE`, proved by the 10,000-buyer run and by 21 injected faults |
-| Unit and integration tests | 23 unit tests in `server/test/unit/` and `web/test/unit/`, run by `npm run test:unit`. 56 integration tests in `server/test/integration/` and `web/test/integration/`, run by `npm run test:integration` against real Postgres, Redis and Kafka through testcontainers |
+| Unit and integration tests | 23 unit tests in `server/test/unit/` and `web/test/unit/`, run by `npm run test:unit`. 57 integration tests in `server/test/integration/` and `web/test/integration/`, run by `npm run test:integration` against real Postgres, Redis and Kafka through testcontainers |
 | Stress tests, and an explanation of the results | `npm run stress` for the counts, `npm run bench` for the speed, and the Measured section for the reading |
 | TypeScript, Node with Fastify, React | all three, type checked by `npm run build` |
 | Ready for managed services | every store is a managed product, and nothing is mocked. The Scaling section holds the target picture |

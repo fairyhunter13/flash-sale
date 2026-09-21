@@ -24,10 +24,11 @@ let run = 0
 async function start(
   stock: number,
   workers = 1,
+  window: { startMs: number; endMs: number } = { startMs: START, endMs: END },
 ): Promise<{ gate: Gate; pipeline: Pipeline; namespace: string }> {
   await pool.query('DELETE FROM orders')
   await pool.query('DELETE FROM queue_offsets')
-  await writeCampaign(pool, { stock, startMs: START, endMs: END })
+  await writeCampaign(pool, { stock, ...window })
   run += 1
   const namespace = `t_pipe_${run}`
   const gate = new Gate(pool, 0)
@@ -383,6 +384,27 @@ describe('the pipeline', () => {
       await new Promise((ready) => setTimeout(ready, 800))
       expect(pipeline.counts.rebuilds).toBe(before)
       expect(await redis.keys(`*${tail}`)).toEqual([])
+    } finally {
+      await redis.quit()
+    }
+  })
+
+  it('a sale that has not opened writes no Redis key at all', async () => {
+    const soon = Date.now() + 3_600_000
+    const { pipeline, namespace } = await start(10, 1, { startMs: soon, endMs: soon + 3_600_000 })
+
+    const redis = createClient({ url: inject('redisUrl') })
+    await redis.connect()
+    try {
+      // Three sweeps. A pending sale must take no key on in any of them.
+      await new Promise((ready) => setTimeout(ready, 800))
+      expect(await redis.keys(`*.${namespace}`)).toEqual([])
+      expect(pipeline.counts.rebuilds).toBe(0)
+
+      expect(await pipeline.reserve('early', Date.now())).toBe('not-open')
+      expect(await redis.keys(`*.${namespace}`)).toEqual([])
+      // No counter, so the count comes from Postgres.
+      expect(await pipeline.left()).toBe(10)
     } finally {
       await redis.quit()
     }
