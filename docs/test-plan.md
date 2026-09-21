@@ -24,7 +24,7 @@ I tested the Redis pipeline, the four routes, the Kafka workers, the page and th
 
 The tier decides the folder, and a `unit` case lives in `server/test/unit/` and `web/test/unit/`. `npm run test:unit` runs those 23 while Docker is stopped.
 
-A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 45. `npm test` runs all 68.
+A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 48. `npm test` runs all 71.
 
 I left four things out.
 
@@ -100,6 +100,24 @@ Precondition: `queue_offsets` holds a resume point past the record's offset.
 Action: a worker reads that record again.
 Expected result: `Gate.record` answers `replayed` before the insert runs.
 Postcondition: the order table and the unit count do not move.
+
+S-20 A win that never reached Kafka is delivered by the sweep.
+Precondition: `sale:outbox` holds a buyer and a place, and no order row names that buyer.
+Action: the reconciler runs.
+Expected result: the win reaches Kafka, and a worker writes the order row.
+Postcondition: `sale:outbox` is empty, and the unit count is down by 1.
+
+S-21 A buyer is never told they hold a unit they did not win.
+Precondition: the sale has 1 unit, and 3 buyers each send 8 parallel requests.
+Action: 2 of the 3 buyers lose at the counter.
+Expected result: every buyer told `already-bought` holds an order row.
+Postcondition: exactly 1 order row exists.
+
+S-22 A rebuild never lowers the counter.
+Precondition: `sale:sold` reads 3, and the order table holds 2 rows.
+Action: `Pipeline.rehydrate` runs.
+Expected result: `sale:sold` stays at 3.
+Postcondition: the next buyer gets place 4, and no place is sold twice.
 
 S-11 A store does not answer.
 Precondition: the database is unreachable.
@@ -194,6 +212,9 @@ Postcondition: no source file holds syntax that strip-only mode refuses.
 | T-30 | An insert that names the conflict writes no second row | S-10 | D-02, D-08 | done | server/test/integration/schema.spec.ts > the order table > the second insert writes no row when it names the conflict | 12 | engine |
 | T-40 | A record below the resume point never reaches the stock | S-19 | D-08 | done | server/test/integration/gate.spec.ts > the gate > the fence refuses a record below the watermark before it reaches the stock | 15 | engine |
 | T-41 | A worker that replays a whole partition writes no second row | S-19 | D-08 | done | server/test/integration/gate.spec.ts > the gate > a worker that replays a whole partition from offset 0 writes no second row | 14 | engine |
+| T-46 | A win left in the outbox reaches the database after one sweep | S-20 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a win left in the outbox reaches the database after one sweep | 13 | engine |
+| T-47 | No buyer is told already-bought for a unit they never won | S-21 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > no buyer is told already-bought for a unit they never won | 12 | engine |
+| T-48 | A rebuild never lowers the counter | S-22 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a rebuild never lowers the counter | 7 | engine |
 | T-36 | Every server source file runs under strip-only mode | S-18 | D-01 | done | server/test/unit/strip.spec.ts > the source runs under node > every server source file strips cleanly | 10 | route |
 | T-37 | A lost Redis is rebuilt from the order rows | S-17 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a lost Redis is rebuilt from the order rows, and the next place is right | 14 | engine |
 | T-38 | The Buy Now button is refused while the sale is not open | S-03 | D-10 | done | web/test/unit/App.spec.tsx > the page > the button is refused while the sale is not open | 12 | unit |

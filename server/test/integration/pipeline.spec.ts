@@ -1,4 +1,5 @@
 import type { Pool } from 'pg'
+import { createClient } from 'redis'
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from 'vitest'
 import { Gate } from '../../src/gate/gate.ts'
 import { Pipeline } from '../../src/queue/pipeline.ts'
@@ -153,5 +154,57 @@ describe('the pipeline', () => {
     expect(winners).toHaveLength(50)
     expect(winners.map((one) => one.seq)).toEqual(Array.from({ length: 50 }, (_u, i) => i + 1))
     expect(await gate.stockLeft()).toBe(0)
+  })
+
+  // A crash between the script and the Kafka send leaves the win here. Only the
+  // sweep finds it, so a sold unit with no order row is what a failure looks like.
+  it('a win left in the outbox reaches the database after one sweep', async () => {
+    const { gate } = await start(3)
+    const redis = createClient({ url: inject('redisUrl') })
+    await redis.connect()
+    const tail = `.t_pipe_${run}`
+
+    await redis.sAdd(`sale:buyers${tail}`, 'stranded')
+    await redis.set(`sale:sold${tail}`, '1')
+    await redis.hSet(`sale:outbox${tail}`, 'stranded', '1')
+
+    const until = Date.now() + 15_000
+    let winners = await gate.winners()
+    while (winners.length === 0 && Date.now() < until) {
+      await new Promise((ready) => setTimeout(ready, 100))
+      winners = await gate.winners()
+    }
+
+    expect(winners.map((one) => one.buyerId)).toEqual(['stranded'])
+    expect(await gate.stockLeft()).toBe(2)
+    expect(await redis.hLen(`sale:outbox${tail}`)).toBe(0)
+    await redis.quit()
+  })
+
+  it('no buyer is told already-bought for a unit they never won', async () => {
+    const { gate, pipeline } = await start(1)
+    // 3 buyers, 8 calls each. Two of the 3 must lose at the counter.
+    const buyers = Array.from({ length: 24 }, (_unused, index) => `buyer-${index % 3}`)
+
+    const answers = await Promise.all(buyers.map((one) => pipeline.reserve(one, DURING)))
+    expect(await pipeline.drained()).toBe(true)
+
+    const winners = new Set((await gate.winners()).map((one) => one.buyerId))
+    const claimed = new Set(buyers.filter((_unused, index) => answers[index] === 'already-bought'))
+    expect([...claimed].filter((one) => !winners.has(one))).toEqual([])
+  })
+
+  it('a rebuild never lowers the counter', async () => {
+    const { pipeline } = await start(5)
+    await Promise.all(['a', 'b', 'c'].map((one) => pipeline.reserve(one, DURING)))
+    expect(await pipeline.drained()).toBe(true)
+    // The third order row disappears, so Postgres now reads behind Redis.
+    await pool.query('DELETE FROM orders WHERE seq = 3')
+
+    const rebuilt = await pipeline.rehydrate()
+
+    expect(rebuilt.highestSeq).toBe(2)
+    // 3 units are gone. A rebuild that wrote 2 would sell one place twice.
+    expect(await pipeline.left()).toBe(2)
   })
 })

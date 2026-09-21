@@ -6,7 +6,7 @@ Every development task has an identifier, `D-01` to `D-16`. The numbers only go 
 
 Status is one of planned, in-progress, done, blocked or dropped. I give a blocked row and a dropped row one line of reason each, and every other status gets none.
 
-The last column names the test cases that cover the task. The cases run from `T-01` to `T-45` and come from the case table in [`docs/test-plan.md`](test-plan.md#cases).
+The last column names the test cases that cover the task. The cases run from `T-01` to `T-48` and come from the case table in [`docs/test-plan.md`](test-plan.md#cases).
 
 ## Context
 
@@ -22,7 +22,7 @@ Each row says why I made the choice. `docs/decisions.md` holds the same decision
 
 | Axis | Choice | Rejected | Evidence |
 | --- | --- | --- | --- |
-| Who decides the winner | 4 plain Redis commands | A lock around a read and a write | Redis runs one command at a time, so each command already answers one caller. No step needs a lock. |
+| Who decides the winner | One Redis script, `RESERVE` | A lock around a read and a write | Redis runs one command at a time, so each command already answers one caller. No step needs a lock. |
 | Where the order is kept | Postgres 16 | SQLite | SQLite allows one writer, so the server cannot run as more than one process. |
 | How the win reaches the database | A Kafka topic, drained by 4 workers | A write inside the request | The buyer is answered in about 1 ms, and an unread message survives a worker crash. |
 | The second guard | `UNIQUE (user_id)` on the order table | Trusting the gate alone | Two independent guards fail apart. One bug then cannot reach the record. |
@@ -39,7 +39,7 @@ flowchart TD
   buyer([Buyer]) -->|HTTP| web["React page<br/>web/src"]
   web -->|"POST /api/purchase"| api["Fastify<br/>server/src"]
   api -.->|"SSE, GET /api/sale/stream"| web
-  api -->|"GET, SADD, INCR, SREM"| redis[("Redis 7<br/>the sold count, and the buyers")]
+  api -->|"EVALSHA, one script"| redis[("Redis 7<br/>the sold count, the buyers, and the outbox")]
   api -->|produce| kafka[["Kafka<br/>sale.wins, 4 partitions"]]
   kafka -->|consume| work["4 queue workers<br/>server/src/queue/pipeline.ts"]
   work -->|"INSERT ... ON CONFLICT DO NOTHING"| pg[("Postgres 16<br/>orders, UNIQUE user_id")]
@@ -132,7 +132,7 @@ I wrote the plan before the code, and two parts changed during the build. The ro
 
 | Planned | Ships | Why it changed |
 | --- | --- | --- |
-| One Lua script, `reserve.lua`, decides a purchase | 4 plain Redis commands in `server/src/queue/pipeline.ts` | Each command is already atomic, so no script is needed. A script is a second language that no type checker reads, and `EVALSHA` must be recovered after a Redis restart |
+| One Lua script, `reserve.lua`, decides a purchase | One Lua script, `RESERVE` in `server/src/queue/scripts.ts` | The script is back, and it lives in a `.ts` file as a string. `server/tsconfig.json` includes `src/**/*.ts` only, and the build is a bare `tsc`. A `.lua` file would never reach `dist/`. I shipped 4 plain commands first and reverted that, because 2 faults lived in the gaps between them |
 | A Redis stream, `sale:wins`, carries the win to a recorder process | A Kafka topic, `sale.wins`, over 4 partitions, read by workers inside the server | A stream consumer group is lost when Redis restarts with no saved data. Kafka keeps the topic on disk, and the offset lives in Postgres beside the order row |
 | The stock and the window are environment variables | A row, written by `server/sql/migrations/0002_campaign.sql` | The window belongs with the data it bounds. `CHECK (end_at > start_at)` then refuses a bad window at the database |
 | D-13 grounds every row of a concept map | dropped | The map was a planning tool. It shipped no behaviour, and its tests read the map rather than the code |

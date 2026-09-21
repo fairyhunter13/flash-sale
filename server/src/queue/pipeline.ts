@@ -2,14 +2,19 @@ import { Kafka, Partitioners, type Admin, type Consumer, type Producer } from 'k
 import { createClient, type RedisClientType } from 'redis'
 import type { Gate, SaleNumbers } from '../gate/gate.ts'
 import { saleState, type Outcome } from '../gate/status.ts'
+import { REHYDRATE, RESERVE } from './scripts.ts'
 
 export const TOPIC = 'sale.wins'
 export const PARTITIONS = 4
 const GROUP = 'sale-writers'
 
-// The only two keys in Redis.
+// The only three keys in Redis.
 export const SOLD_KEY = 'sale:sold'
 export const BUYERS_KEY = 'sale:buyers'
+export const OUTBOX_KEY = 'sale:outbox'
+
+/** A win that never reached Kafka waits here. The sweep is the only thing that finds it. */
+const SWEEP_MS = 250
 
 export type PipelineOptions = {
   readonly redisUrl: string
@@ -53,6 +58,10 @@ export class Pipeline {
   private readonly group: string
   private readonly soldKey: string
   private readonly buyersKey: string
+  private readonly outboxKey: string
+  private readonly shas = new Map<string, string>()
+  private sweep: NodeJS.Timeout | undefined
+  private sweeping = false
   readonly counts: PipelineCounts = {
     produced: 0,
     consumed: 0,
@@ -73,6 +82,7 @@ export class Pipeline {
     this.group = `${GROUP}${tail}`
     this.soldKey = `${SOLD_KEY}${tail}`
     this.buyersKey = `${BUYERS_KEY}${tail}`
+    this.outboxKey = `${OUTBOX_KEY}${tail}`
     this.redis = createClient({ url: options.redisUrl })
     this.redis.on('error', (error: Error) => console.error(`redis: ${error.message}`))
     this.kafka = new Kafka({
@@ -99,44 +109,43 @@ export class Pipeline {
       topics: [{ topic: pipeline.topic, numPartitions: PARTITIONS, replicationFactor: 1 }],
     })
     await pipeline.producer.connect()
+    for (const source of [RESERVE, REHYDRATE]) pipeline.shas.set(source, await pipeline.redis.scriptLoad(source))
     await pipeline.restoreIfEmpty()
+    // The sweep starts after the rebuild, or it reads a hash that `rehydrate` is clearing.
+    pipeline.sweep = setInterval(() => void pipeline.sweepOutbox(), SWEEP_MS)
+    pipeline.sweep.unref()
     for (let id = 0; id < Math.max(1, options.workers); id += 1) await pipeline.startWorker()
     return pipeline
   }
 
   /**
-   * The `GET` is a fast path, never the decision. `INCR` past the stock refuses the buyer.
-   * `sale:sold` only goes up. A stale `GET` costs one call and never a wrong answer.
+   * Redis runs the whole script as one command, so no other client sees a half-done
+   * reserve. The script writes `sale:outbox` with the win, and the Kafka send clears it.
+   * A crash between the two leaves the row for the sweep.
    */
   async reserve(buyerId: string, nowMs: number = Date.now()): Promise<Outcome> {
     const state = saleState(nowMs, 1, this.window)
     if (state === 'pending') return 'not-open'
     if (state === 'closed') return 'over'
 
-    const sold = Number((await this.redis.get(this.soldKey)) ?? 0)
-    if (sold >= this.stock) {
-      this.counts.refusedByFastPath += 1
+    const [outcome, seq, why] = (await this.runScript(
+      RESERVE,
+      [this.buyersKey, this.soldKey, this.outboxKey],
+      [buyerId, String(this.stock)],
+    )) as [string, string, string]
+
+    if (outcome === 'sold-out') {
+      if (why === 'fast') this.counts.refusedByFastPath += 1
+      else this.counts.losersRemoved += 1
       return 'sold-out'
     }
+    if (outcome === 'already-bought') return 'already-bought'
 
-    const fresh = await this.redis.sAdd(this.buyersKey, buyerId)
-    if (fresh === 0) return 'already-bought'
-
-    const seq = await this.redis.incr(this.soldKey)
-    if (seq > this.stock) {
-      // Left in, this buyer reads `already-bought` on a retry for a unit they
-      // never won, and the set grows with the traffic.
-      await this.redis.sRem(this.buyersKey, buyerId)
-      this.counts.losersRemoved += 1
-      return 'sold-out'
-    }
-
-    await this.producer.send({
-      // The key is the buyer, so one buyer keeps one partition and keeps order.
-      topic: this.topic,
-      messages: [{ key: buyerId, value: JSON.stringify({ buyerId, seq }) }],
-    })
+    // The buyer holds the unit from here. Kafka delivery is the sweep's job now.
     this.counts.produced += 1
+    await this.deliver(buyerId, Number(seq)).catch((error: Error) =>
+      console.error(`kafka send failed, the sweep holds the win: ${error.message}`),
+    )
     return 'won'
   }
 
@@ -166,22 +175,73 @@ export class Pipeline {
    * I use `max(seq)` for the counter, not the row count. A count hands the next buyer a place
    * someone already holds. A win still in Kafka has no order row. The rebuild is exact only after
    * the queue drains.
+   *
+   * The script never lowers `sale:sold`, so a rebuild against a live counter is safe.
    */
   async rehydrate(): Promise<{ buyers: number; highestSeq: number; ms: number }> {
     const startedAt = Date.now()
     const winners = await this.gate.winners()
     const highest = winners.reduce((top, one) => Math.max(top, one.seq), 0)
-    await this.redis.del(this.buyersKey)
-    if (winners.length > 0) await this.redis.sAdd(this.buyersKey, winners.map((one) => one.buyerId))
-    await this.redis.set(this.soldKey, String(highest))
+    await this.runScript(
+      REHYDRATE,
+      [this.buyersKey, this.soldKey, this.outboxKey],
+      [String(highest), ...winners.map((one) => one.buyerId)],
+    )
     return { buyers: winners.length, highestSeq: highest, ms: Date.now() - startedAt }
   }
 
   async close(): Promise<void> {
+    if (this.sweep !== undefined) clearInterval(this.sweep)
     for (const consumer of this.consumers) await consumer.disconnect().catch(() => {})
     await this.producer.disconnect().catch(() => {})
     await this.admin.disconnect().catch(() => {})
     await this.redis.quit().catch(() => {})
+  }
+
+  /**
+   * `EVALSHA` sends the hash, never the body. A Redis restart drops the body, and the
+   * `NOSCRIPT` error below is the only warning. The fallback loads it again.
+   */
+  private async runScript(source: string, keys: string[], args: string[]): Promise<unknown> {
+    const sha = this.shas.get(source)
+    if (sha !== undefined) {
+      try {
+        return await this.redis.evalSha(sha, { keys, arguments: args })
+      } catch (error) {
+        if (!(error as Error).message.includes('NOSCRIPT')) throw error
+      }
+    }
+    const fresh = await this.redis.scriptLoad(source)
+    this.shas.set(source, fresh)
+    return this.redis.evalSha(fresh, { keys, arguments: args })
+  }
+
+  /** The `HDEL` is the proof the win reached Kafka. It runs only after the send returns. */
+  private async deliver(buyerId: string, seq: number): Promise<void> {
+    await this.producer.send({
+      // The key is the buyer, so one buyer keeps one partition and keeps order.
+      topic: this.topic,
+      messages: [{ key: buyerId, value: JSON.stringify({ buyerId, seq }) }],
+    })
+    await this.redis.hDel(this.outboxKey, buyerId)
+  }
+
+  /**
+   * A row still in `sale:outbox` is a unit the sale sold and Kafka never saw.
+   * A second send is safe, because the producer is idempotent and `orders` holds
+   * `UNIQUE (user_id)`.
+   */
+  private async sweepOutbox(): Promise<void> {
+    if (this.sweeping) return
+    this.sweeping = true
+    try {
+      const stranded = await this.redis.hGetAll(this.outboxKey)
+      for (const [buyerId, seq] of Object.entries(stranded)) await this.deliver(buyerId, Number(seq))
+    } catch (error) {
+      console.error(`outbox sweep failed: ${(error as Error).message}`)
+    } finally {
+      this.sweeping = false
+    }
   }
 
   /**

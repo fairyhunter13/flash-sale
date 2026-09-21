@@ -24,9 +24,9 @@ Run `npm run db:migrate`. The command `npm start` also runs the migrations, and 
 
 `.env` holds addresses and sizes only. Postgres, Redis or Kafka may already run on your machine. If one already runs, change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT`, and change the URL beside it.
 
-`npm test` runs all 68 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
+`npm test` runs all 71 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
 
-The 45 integration tests use real Postgres, Redis and Kafka through testcontainers, and I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
+The 48 integration tests use real Postgres, Redis and Kafka through testcontainers, and I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
 
 `npm run dev` runs the server and Vite together. Vite serves the page on `http://127.0.0.1:5173`, and it also proxies `/api` requests to the server.
 
@@ -78,7 +78,7 @@ flowchart LR
     B["Buyer<br/>React page"]
     F["Fastify<br/>4 routes + SSE"]
     PL["Pipeline<br/>decides the winner"]
-    R[("Redis 7<br/>sale:sold, sale:buyers")]
+    R[("Redis 7<br/>sale:sold, sale:buyers, sale:outbox")]
     K[["Kafka 4<br/>sale.wins, 4 partitions"]]
     W["4 queue workers"]
     P[("Postgres 16<br/>stock, orders, queue_offsets")]
@@ -87,7 +87,7 @@ flowchart LR
     B -- "GET /api/sale/stream (SSE)" --> F
     B -- "GET /api/purchase/:userId" --> F
     F --> PL
-    PL -- "GET / SADD / INCR / SREM" --> R
+    PL -- "EVALSHA, one script" --> R
     PL -- "send, keyed by the buyer" --> K
     K -- "read_committed, no auto commit" --> W
     W -- "BEGIN / order row + unit + resume point / COMMIT" --> P
@@ -103,20 +103,23 @@ I split the state across three places. Each one has a single job.
 
 | Place | Holds | Why it is there |
 | --- | --- | --- |
-| Redis 7 | `sale:sold` and `sale:buyers` | It answers the buyer. Redis runs one command at a time, so `INCR` never hands two buyers the same place. |
+| Redis 7 | `sale:sold`, `sale:buyers` and `sale:outbox` | It answers the buyer. Redis runs one command at a time, so `INCR` never hands two buyers the same place. |
 | Kafka 4 | `sale.wins`, 4 partitions | It carries each win, so the buyer waits for no database write. |
 | Postgres 16 | `stock`, `orders` and `queue_offsets` | It is the permanent record, and the only store that must survive a restart. |
 
-Redis answers the buyer in 4 commands at most. `Pipeline.reserve` in `server/src/queue/pipeline.ts` runs them in this order, and it stops at the first refusal.
+Redis answers the buyer in one round trip. `Pipeline.reserve` in `server/src/queue/pipeline.ts` runs the `RESERVE` script from `server/src/queue/scripts.ts`, and Redis runs that whole script as one command. The script does up to 5 steps, and it stops at the first refusal.
 
 1. `GET sale:sold`. If the count already reached the stock, the buyer reads `sold-out`. Nothing is written anywhere.
 2. `SADD sale:buyers`. If the member was already in the set, the buyer holds a unit and the answer is `already-bought`.
 3. `INCR sale:sold`. The number it returns is the buyer's place in the queue. Because Redis runs one command at a time, two buyers never get the same number.
 4. `SREM sale:buyers`, only if that place passed the stock. The loser holds nothing, and the set has no reason to remember them.
+5. `HSET sale:outbox`, the buyer to their place. The Kafka send clears the entry, so a row left behind is a win Kafka never received.
 
-Kafka gets one record for a winner's place, and the buyer is the key.
+Kafka gets one record for a winner's place, and the buyer is the key. A reconciler sweeps `sale:outbox` every 250 ms and sends each leftover row again.
 
-`SADD` in step 2 is the only "one unit for each buyer" check on the fast path. Redis runs each command as one unit, and two parallel attempts by one buyer can never both read 1.
+The script is what makes steps 2 to 4 safe together. As 3 separate commands, a parallel request from a buyer who lost at step 3 could read the set between step 2 and step 4. It then answered `already-bought` for a unit nobody won. No other client runs inside the script, so that gap is gone.
+
+`SADD` in step 2 is the only "one unit for each buyer" check on the fast path.
 
 Without `SADD`, a repeat buyer reaches `INCR`, and the counter then drops a unit for someone who already holds one. Postgres still refuses the second order row at `UNIQUE (user_id)`. Nobody gets two units. But the count loses that unit, and the sale reads sold out with fewer than 1,000 order rows.
 
@@ -174,9 +177,9 @@ Four guards protect the count.
 
 The last two guards live in `server/sql/migrations/0001_tables.sql`. Each one has a test in `server/test/integration/schema.spec.ts` that tries to break it, and when the worker fails, the database rolls back the transaction and the stock stays intact.
 
-## Why there is no Redis transaction
+## Why the Redis decision is one script and not a transaction
 
-`Pipeline.reserve` uses no `MULTI`, no `WATCH` and no Lua script, and each decision is already one atomic Redis command. That is why I skipped the transaction. [`docs/decisions.md`](docs/decisions.md#why-there-is-no-redis-transaction) has the full argument.
+`Pipeline.reserve` uses no `MULTI` and no `WATCH`. It runs one Lua script, and Redis runs that script as one command. A `MULTI` block answers every command at the end, so it cannot branch on what `SADD` returned. [`docs/decisions.md`](docs/decisions.md#why-the-redis-decision-is-one-script-and-not-a-transaction) has the full argument.
 
 ## What happens when something breaks
 
@@ -205,7 +208,7 @@ I ran this on a box with an Intel Core Ultra 9 275HX, 24 cores, 62 GB RAM and No
 | `GET /api/sale` throughput | 31,991 a second, p50 13 ms, p99 51 ms | `npm run bench` |
 | `POST /api/purchase` throughput | 33,274 a second, p50 13 ms, p99 31 ms | `npm run bench` |
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
-| Tests | 68 over 11 files: 23 unit, 45 integration against real Postgres, Redis and Kafka | `npm test` |
+| Tests | 71 over 11 files: 23 unit, 48 integration against real Postgres, Redis and Kafka | `npm test` |
 
 The purchase route is as fast as the read route, and Redis answers both. The earlier version opened a Postgres transaction on every purchase and ran at 11,529 a second. Redis raised the refusal path by 2.9 times.
 
@@ -227,7 +230,7 @@ I split the work across three stores, and each one can fail on its own without t
 
 The cost is two more containers. There is also a window where Redis holds a win that Postgres does not have yet. I measured both costs in [`docs/design-experiments.md`](docs/design-experiments.md#why-redis-a-queue-and-a-database).
 
-I make the decision with four Redis commands, and I use no Lua script and no transaction. A Lua script is atomic, but it is a second language that no type checker reads. `SADD` before `INCR` leaves one gap: a buyer sits in the set before their place is known. `SREM` closes that gap in the same function. The whole decision stays in TypeScript. [Why there is no Redis transaction](#why-there-is-no-redis-transaction) gives the argument, and `server/test/integration/pipeline.spec.ts` gives the proof.
+I make the decision with one Lua script, and I use no transaction. The script costs me a second language that no type checker reads, and it buys two things that four plain commands could not. A parallel request from a buyer who lost at `INCR` no longer reads `already-bought` for a unit nobody won. A crash right after `INCR` no longer burns a unit, because the script writes `sale:outbox` in the same command and a sweep re-sends what Kafka never got. [Why the Redis decision is one script and not a transaction](#why-the-redis-decision-is-one-script-and-not-a-transaction) gives the argument, and `server/test/integration/pipeline.spec.ts` gives the proof.
 
 Postgres stores the orders. SQLite would handle 1,000 rows from one process without a container, but I use Postgres anyway, and a real sale grows past that. I did not want the design to change when it does. The cost is one container.
 
@@ -242,7 +245,7 @@ I left some things out on purpose. There is no authentication: a username or an 
 ## Layout
 
 ```
-server/   Fastify, the Redis pipeline, the Postgres gate, the migrations, 55 tests
+server/   Fastify, the Redis pipeline, the Postgres gate, the migrations, 58 tests
 web/      React 19 on Vite, 13 tests
 stress/   the correctness run, and the throughput bench
 ```
@@ -271,7 +274,7 @@ stress/   the correctness run, and the throughput bench
 | High throughput, and a design that scales | the Measured and Scaling sections. Each number names its command. The write is already off the request path |
 | Robustness and fault tolerance | a slow database costs drain time and no answers. A rolled-back transaction writes no order. A lost Redis is rebuilt from the order rows, and `max(seq)` gives the next place, never the row count |
 | Concurrency control, with no overselling | `INCR` in Redis, then the row lock in the `UPDATE`, proved by the 10,000-buyer run and by 21 injected faults |
-| Unit and integration tests | 23 unit tests in `server/test/unit/` and `web/test/unit/`, run by `npm run test:unit`. 45 integration tests in `server/test/integration/` and `web/test/integration/`, run by `npm run test:integration` against real Postgres, Redis and Kafka through testcontainers |
+| Unit and integration tests | 23 unit tests in `server/test/unit/` and `web/test/unit/`, run by `npm run test:unit`. 48 integration tests in `server/test/integration/` and `web/test/integration/`, run by `npm run test:integration` against real Postgres, Redis and Kafka through testcontainers |
 | Stress tests, and an explanation of the results | `npm run stress` for the counts, `npm run bench` for the speed, and the Measured section for the reading |
 | TypeScript, Node with Fastify, React | all three, type checked by `npm run build` |
 | Ready for managed services | every store is a managed product, and nothing is mocked. `docs/design-experiments.md` holds the 9 measured designs. The Scaling section holds the target picture |
