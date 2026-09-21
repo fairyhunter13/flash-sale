@@ -121,9 +121,9 @@ Postgres starts one OS process per connection, each about 5 MB, with a default `
 
 | Open sockets | `DB_POOL_MAX` | Peak Postgres backends | Requests a second |
 | --- | --- | --- | --- |
-| 500 | 20 | 4 | 6,800 to 8,380 |
+| 500 | 20 | 4 to 5 | 6,750 to 8,380 |
 
-At 500 open sockets only 4 connections are ever in use. Redis answers the buyer path. That path never touches the pool. Only the queue workers and the page reads open a connection, and they arrive at the rate the queue drains. An earlier design opened a transaction per purchase and held all 20 at the peak.
+At 500 open sockets only 4 or 5 connections are ever in use. Redis answers the buyer path. That path never touches the pool. Only the queue workers and the page reads open a connection, and they arrive at the rate the queue drains. An earlier design opened a transaction per purchase and held all 20 at the peak.
 
 A bounded pool turns a database failure into a wait inside the application, and that wait has a limit you can see. An arrival spike lands in Kafka instead, where the workers drain it at whatever rate the pool allows.
 

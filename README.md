@@ -53,25 +53,25 @@ The script empties the sale and orders tables, then drives **10,000 buyers over 
 The run fails on any other outcome:
 
 ```
-queue drained in 567 ms
+queue drained in 718 ms
 ok  won           1000  (want 1000)
 ok  sold-out      9000  (want 9000)
 ok  other            0  (want 0)
 ok  units left       0  (want 0)
 ok  pg orders     1000  (want 1000)
 
-10000 buyers over 500 connections in 1.30 s
-7703 purchase requests a second
-4 Postgres backends at the peak, for 500 open sockets
+10000 buyers over 500 connections in 1.24 s
+8077 purchase requests a second
+5 Postgres backends at the peak, for 500 open sockets
 
 PASS
 ```
 
-`queue drained in 567 ms` is the gap between the last buyer getting an answer and the last order row landing in Postgres. Redis answers the buyer first, and a worker writes the row to Postgres later.
+`queue drained in 718 ms` is the gap between the last buyer getting an answer and the last order row landing in Postgres. Redis answers the buyer first, and a worker writes the row to Postgres later.
 
 That number grows with the records the topic already holds, so a repeat run reads higher than the first one. Against a new `sale.wins` topic I measured 770 ms and 773 ms. The same build read 1,387 ms, 2,411 ms and 3,078 ms on the third, fourth and fifth run. `npm run db:down` and `npm run db:up` drop the topic and return the number to the first reading.
 
-Postgres runs one operating system process per open connection, and that process is a backend. I measured `4 Postgres backends` at peak against 500 open sockets, with `DB_POOL_MAX` set to 20. Only workers and page reads touch the pool, and the buyer path skips it. See [Scaling](#scaling).
+Postgres runs one operating system process per open connection, and that process is a backend. I measured 4 to 5 `Postgres backends` at peak against 500 open sockets, over 23 runs, with `DB_POOL_MAX` set to 20. Only workers and page reads touch the pool, and the buyer path skips it. See [Scaling](#scaling).
 
 `npm run bench` measures throughput with autocannon, but it skips count checks. Autocannon reads its `amount` as a per-connection quota.
 
@@ -215,15 +215,15 @@ I ran this on a box with an Intel Core Ultra 9 275HX, 24 cores, 62 GB RAM and No
 | Measure | Number | Command |
 | --- | --- | --- |
 | Buyers, and the units they took | 10,000 buyers, exactly 1,000 won | `npm run stress` |
-| Time for all 10,000 | 1.19 s to 1.48 s over 19 runs, so 6,750 to 8,380 a second | `npm run stress` |
-| Postgres backends at the peak | 4, for 500 open sockets | `npm run stress` |
+| Time for all 10,000 | 1.19 s to 1.48 s over 23 runs, so 6,750 to 8,380 a second | `npm run stress` |
+| Postgres backends at the peak | 4 to 5, for 500 open sockets | `npm run stress` |
 | The queue drain | every one of the 1,000 order rows landed, 566 ms to 3,285 ms after the last buyer was answered | `npm run stress` |
-| `GET /api/sale` throughput | 31,991 a second, p50 13 ms, p99 51 ms | `npm run bench` |
-| `POST /api/purchase` throughput | 33,274 a second, p50 13 ms, p99 31 ms | `npm run bench` |
+| `GET /api/sale` throughput | 30,167 to 32,309 a second over 3 runs, p50 13 to 14 ms, p99 54 to 58 ms | `npm run bench` |
+| `POST /api/purchase` throughput | 28,358 to 29,331 a second over 3 runs, p50 16 ms, p99 26 to 32 ms | `npm run bench` |
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
 | Tests | 77 over 11 files: 23 unit, 54 integration against real Postgres, Redis and Kafka | `npm test` |
 
-Redis answers both routes, and the purchase route is as fast as the read route. An earlier version opened a Postgres transaction on every purchase and ran at 11,529 a second. Redis raised the refusal path by 2.9 times.
+Redis answers both routes, and the purchase route runs within 12% of the read route. An earlier version opened a Postgres transaction on every purchase and ran at 11,529 a second. Redis raised the refusal path by 2.5 times.
 
 `npm run bench` drives one repeat buyer against a sold-out sale. It measures the refusal path only. `npm run stress` measures the winning path at 6,750 to 8,380 a second, and that last number includes the Kafka send.
 
@@ -238,7 +238,7 @@ Four things break first, in this order.
 3. **The queue drain**, once wins arrive faster than the workers retire them. A buyer never feels it. The lag on `GET /api/purchase/:userId` grows instead, and a higher `QUEUE_WORKERS` pulls it back.
 4. **The single stock row**, far above 1,000 units. Every worker updates row `id = 1`, one write at a time. The change is `N` stock rows of `stock / N`, and it gives up a perfect sell-out.
 
-Database connections are the bottleneck people expect. They are not one here. At 500 open sockets with `DB_POOL_MAX` set to 20, Postgres held 4 backends at the peak.
+Database connections are the bottleneck people expect. They are not one here. At 500 open sockets with `DB_POOL_MAX` set to 20, Postgres held 4 to 5 backends at the peak.
 
 [`docs/architecture.md`](docs/architecture.md#scaling) gives each measurement, the change that moves each limit, and the target picture at a million buyers.
 
