@@ -8,10 +8,17 @@ export const TOPIC = 'sale.wins'
 export const PARTITIONS = 4
 const GROUP = 'sale-writers'
 
-// The only four keys in Redis.
+// The only five keys in Redis.
 export const SOLD_KEY = 'sale:sold'
 export const BUYERS_KEY = 'sale:buyers'
 export const OUTBOX_KEY = 'sale:outbox'
+
+/**
+ * Every place the script issued that Postgres does not hold yet. The outbox empties
+ * when Kafka takes the win, and this hash empties when the order row is committed.
+ * So a rebuild that reads Postgres and this hash sees every place, Kafka included.
+ */
+export const ISSUED_KEY = 'sale:issued'
 
 /** Present means Redis still holds the sale it was given. Absent means a rebuild is due. */
 export const LIVE_KEY = 'sale:live'
@@ -67,6 +74,7 @@ export class Pipeline {
   private readonly buyersKey: string
   private readonly outboxKey: string
   private readonly liveKey: string
+  private readonly issuedKey: string
   private readonly shas = new Map<string, string>()
   private sweep: NodeJS.Timeout | undefined
   private sweeping = false
@@ -94,6 +102,7 @@ export class Pipeline {
     this.buyersKey = `${BUYERS_KEY}${tail}`
     this.outboxKey = `${OUTBOX_KEY}${tail}`
     this.liveKey = `${LIVE_KEY}${tail}`
+    this.issuedKey = `${ISSUED_KEY}${tail}`
     this.redis = createClient({ url: options.redisUrl })
     this.redis.on('error', (error: Error) => console.error(`redis: ${error.message}`))
     this.kafka = new Kafka({
@@ -167,7 +176,7 @@ export class Pipeline {
   private async tryReserve(buyerId: string): Promise<[string, string, string]> {
     return (await this.runScript(
       RESERVE,
-      [this.buyersKey, this.soldKey, this.outboxKey, this.liveKey],
+      [this.buyersKey, this.soldKey, this.outboxKey, this.liveKey, this.issuedKey],
       [buyerId, String(this.stock)],
     )) as [string, string, string]
   }
@@ -211,10 +220,10 @@ export class Pipeline {
 
   /**
    * I use `max(seq)` for the counter, not the row count. A count hands the next buyer a place
-   * someone already holds. A win still in Kafka has no order row. The rebuild is exact only after
-   * the queue drains.
+   * someone already holds.
    *
-   * The script never lowers `sale:sold`, so a rebuild against a live counter is safe.
+   * A win still in Kafka has no order row, so Postgres alone reads behind the sale. The script
+   * raises the floor with the places left in `sale:outbox`, and it never lowers `sale:sold`.
    */
   async rehydrate(): Promise<{ buyers: number; highestSeq: number; ms: number }> {
     const startedAt = Date.now()
@@ -222,7 +231,7 @@ export class Pipeline {
     const highest = winners.reduce((top, one) => Math.max(top, one.seq), 0)
     await this.runScript(
       REHYDRATE,
-      [this.buyersKey, this.soldKey, this.outboxKey, this.liveKey],
+      [this.buyersKey, this.soldKey, this.outboxKey, this.liveKey, this.issuedKey],
       [String(highest), ...winners.map((one) => one.buyerId)],
     )
     return { buyers: winners.length, highestSeq: highest, ms: Date.now() - startedAt }
@@ -305,8 +314,9 @@ export class Pipeline {
    * the highest place on disk while Redis is whole. Below it, Redis lost the counter, and
    * the next buyer would take a place that Postgres already holds.
    *
-   * The `sale:live` flag catches a whole store that went, on the first request. One erased
-   * key leaves the flag, so the check below is what catches that one. It costs one indexed
+   * `RESERVE` refuses on the first request where either `sale:live` or `sale:sold` is gone,
+   * so a deleted key never reaches a buyer. The check below catches the one case a deletion
+   * cannot produce: a counter rewritten to a lower number. It costs one indexed
    * `MAX(seq)` read every 250 ms.
    */
   private async rebuildIfBehind(): Promise<void> {
@@ -386,6 +396,8 @@ export class Pipeline {
         // Postgres holds this record now. The timer below commits the number,
         // and no commit runs inside the handler.
         applied.set(partition, Number(message.offset) + 1)
+        // The place is settled, so a rebuild no longer has to count it.
+        await this.redis.hDel(this.issuedKey, win.buyerId).catch(() => {})
       },
     })
 

@@ -58,6 +58,8 @@ The script opens with a `GET` as a fast path, and that read never makes the deci
 
 The script closes the first fault, because no other client runs inside it. It closes the second with `sale:outbox`. The script writes the buyer and the place into that hash in the same command that issues them. `Pipeline.deliver` runs `HDEL` only after the Kafka send returns, so a row left in the hash is a win that Kafka never saw. `Pipeline.sweepOutbox` reads the hash every 250 ms and sends each row again. A second send is safe three times over: the producer is idempotent, the Kafka key is the buyer, and `orders` holds `UNIQUE (user_id)`.
 
+The same command writes a second hash, `sale:issued`. The outbox empties when Kafka takes the win. The worker empties `sale:issued` later, after Postgres commits the order row. So `sale:issued` outlives the outbox, and a rebuild reads it. The two hashes answer different questions. The outbox says what to send again, and `sale:issued` says what place Postgres does not hold yet.
+
 **Why no transaction.** A `MULTI`/`EXEC` block queues every command and answers them all at the end, so `reserve` cannot read what `SADD` returned before it decides whether to call `INCR`. A block has no rollback either: where one command fails inside `EXEC`, Redis still applies the others. `WATCH` with a retry loop closes the first fault, and it swaps a lock-free path for one that retries under load.
 
 The script costs one load, plus the `EVALSHA` recovery after a Redis restart. `Pipeline.runScript` catches `NOSCRIPT` and loads the script again. The gain is round trips: 4 commands take 4, and the script takes 1.
@@ -96,10 +98,16 @@ Redis holds the count, and the count is the sale. So the design has to answer wh
 
 Two detectors find the loss, and both end in one rebuild from the order rows.
 
-1. **The `sale:live` flag.** The `RESERVE` script refuses before it counts where the flag is gone, and it answers `lost`. `Pipeline.reserve` then rebuilds and asks once more. `REHYDRATE` writes the flag last, so a script that dies half way leaves the sale refused rather than wrong.
-2. **The counter check in the sweep.** Redis issues the place and Postgres records it later, so `sale:sold` is never below `MAX(orders.seq)` while Redis is whole. Below it, Redis lost the counter. The sweep reads one indexed `MAX(seq)` every 250 ms, and a single erased key cannot hide behind a surviving flag.
+1. **The two keys the script checks first.** `RESERVE` refuses before it counts where either `sale:live` or `sale:sold` is gone, and it answers `lost`. `Pipeline.reserve` then rebuilds and asks once more. `REHYDRATE` writes the counter even at 0, so the counter is a liveness proof of its own. It writes the flag last. A script that dies half way then leaves the sale refused rather than wrong.
 
-The rebuild reads every winner from Postgres and writes the set and the counter again. It never lowers `sale:sold`, so a rebuild can undersell and can never issue a place twice.
+   An earlier build guarded on `sale:live` alone. Delete only `sale:sold`, which is what one evicted key looks like, and the flag still passed the guard. `INCR` then restarted at 1 and handed a buyer a place Postgres already held. `orders` holds `UNIQUE (seq)`, so Postgres rejected the row. The buyer still read `won` for a unit they do not hold.
+2. **The counter check in the sweep.** A deletion cannot get past the check above. A counter rewritten to a lower number can, and the sweep is what catches that. Redis issues the place and Postgres records it later, so `sale:sold` is never below `MAX(orders.seq)` while Redis is whole. The sweep reads one indexed `MAX(seq)` every 250 ms.
+
+The rebuild reads two sources, because Postgres alone does not hold every place. A win travels from the script to Kafka, and then to the order table. A place in flight sits in neither source that the rebuild can read. So `RESERVE` writes the buyer and the place into `sale:issued` in the same command that issues them. The worker deletes that entry later, after Postgres commits the order row. An entry left in the hash is a place Postgres does not hold yet.
+
+`REHYDRATE` reads the order rows and `sale:issued` together, and it raises the counter to the highest place either source names. It never lowers `sale:sold`. So a rebuild can undersell and can never issue a place twice.
+
+An earlier build read Postgres alone and ran `DEL` on `sale:outbox`. A counter erased mid-sale then threw away every win that Kafka had not recorded yet. One measured run told 1,000 buyers `won` and wrote 760 rows, and 240 units stayed unsold. With `sale:issued` the same fault reads 1,000 `won`, 1,000 rows and 0 units left over 3 runs, with the erase at place 284, 205 and 208.
 
 ## Scaling
 

@@ -222,12 +222,62 @@ describe('the pipeline', () => {
       `sale:buyers${tail}`,
       `sale:outbox${tail}`,
       `sale:live${tail}`,
+      `sale:issued${tail}`,
     ])
 
     expect(await pipeline.reserve('d', DURING)).toBe('won')
     expect(await pipeline.drained()).toBe(true)
 
     // Without the rebuild the counter restarts at 1, and buyer `d` holds no row.
+    expect((await gate.winners()).map((one) => one.seq)).toEqual([1, 2, 3, 4])
+    await redis.quit()
+  })
+
+  it('a rebuild keeps a win that Kafka never confirmed', async () => {
+    const { gate, pipeline } = await start(10)
+    await Promise.all(['a', 'b', 'c'].map((one) => pipeline.reserve(one, DURING)))
+    expect(await pipeline.drained()).toBe(true)
+
+    const redis = createClient({ url: inject('redisUrl') })
+    await redis.connect()
+    const tail = `.t_pipe_${run}`
+    // What a crash between the script and the Kafka send leaves behind. `RESERVE`
+    // writes both hashes in one command, so a real crash never leaves only one.
+    await redis.hSet(`sale:outbox${tail}`, 'in-flight', '4')
+    await redis.hSet(`sale:issued${tail}`, 'in-flight', '4')
+
+    // The old script ran DEL on the outbox, so this rebuild threw the win away.
+    await pipeline.rehydrate()
+
+    const until = Date.now() + 15_000
+    let winners = await gate.winners()
+    while (winners.length < 4 && Date.now() < until) {
+      await new Promise((ready) => setTimeout(ready, 100))
+      winners = await gate.winners()
+    }
+
+    expect(winners.map((one) => one.buyerId)).toContain('in-flight')
+    // The rebuild also counts the place the outbox holds, or place 4 is issued twice.
+    expect(await pipeline.left()).toBe(6)
+    await redis.quit()
+  })
+
+  it('an erased counter alone never issues a place twice', async () => {
+    const { gate, pipeline } = await start(10)
+    await Promise.all(['a', 'b', 'c'].map((one) => pipeline.reserve(one, DURING)))
+    expect(await pipeline.drained()).toBe(true)
+
+    const redis = createClient({ url: inject('redisUrl') })
+    await redis.connect()
+    const tail = `.t_pipe_${run}`
+    // Only the counter goes. `sale:live` survives, the way one evicted key does.
+    await redis.del(`sale:sold${tail}`)
+
+    expect(await pipeline.reserve('d', DURING)).toBe('won')
+    expect(await pipeline.drained()).toBe(true)
+
+    // The old script guarded on `sale:live` alone, so `INCR` restarted at 1 and
+    // buyer `d` took place 1, which buyer `a` already holds.
     expect((await gate.winners()).map((one) => one.seq)).toEqual([1, 2, 3, 4])
     await redis.quit()
   })

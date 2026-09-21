@@ -45,7 +45,10 @@ export function registerRoutes(app: FastifyInstance, gate: Gate, pipeline: Pipel
 
     try {
       return { outcome: await pipeline.reserve(userId) }
-    } catch {
+    } catch (error) {
+      // A silent 500 hides which store failed, and a stress run then reads as a
+      // count with no cause. The buyer still sees one sentence.
+      request.log.error({ err: error }, 'the purchase cannot be decided')
       return reply.code(500).send({ error: 'the purchase cannot be decided' })
     }
   })

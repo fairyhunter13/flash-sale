@@ -33,9 +33,9 @@ Run `npm run db:migrate`. The command `npm start` also runs the migrations, and 
 
 `.env` holds addresses and sizes only. Postgres, Redis or Kafka may already run on your machine. If one already runs, change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT`, and change the URL beside it.
 
-`npm test` runs all 75 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
+`npm test` runs all 77 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
 
-The 52 integration tests use real Postgres, Redis and Kafka through testcontainers, and I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
+The 54 integration tests use real Postgres, Redis and Kafka through testcontainers, and I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
 
 `npm run dev` runs the server and Vite together. Vite serves the page on `http://127.0.0.1:5173`, and it also proxies `/api` requests to the server.
 
@@ -89,7 +89,7 @@ flowchart LR
     B["Buyer<br/>React page"]
     F["Fastify<br/>4 routes + SSE"]
     PL["Pipeline<br/>decides the winner"]
-    R[("Redis 7<br/>sale:sold, sale:buyers, sale:outbox")]
+    R[("Redis 7<br/>sale:sold, sale:buyers, sale:outbox, sale:issued")]
     K[["Kafka 4<br/>sale.wins, 4 partitions"]]
     W["4 queue workers"]
     P[("Postgres 16<br/>stock, orders, queue_offsets")]
@@ -114,19 +114,20 @@ I split the state across three places. Each one has a single job.
 
 | Place | Holds | Why it is there |
 | --- | --- | --- |
-| Redis 7 | `sale:sold`, `sale:buyers` and `sale:outbox` | It answers the buyer. Redis runs one command at a time, so `INCR` never hands two buyers the same place. |
+| Redis 7 | `sale:sold`, `sale:buyers`, `sale:outbox` and `sale:issued` | It answers the buyer. Redis runs one command at a time, so `INCR` never hands two buyers the same place. |
 | Kafka 4 | `sale.wins`, 4 partitions | It carries each win, so the buyer waits for no database write. |
 | Postgres 16 | `stock`, `orders` and `queue_offsets` | It is the permanent record, and the only store that must survive a restart. |
 
-Redis answers the buyer in one round trip. `Pipeline.reserve` in `server/src/queue/pipeline.ts` runs the `RESERVE` script from `server/src/queue/scripts.ts`, and Redis runs that whole script as one command. The script does up to 5 steps, and it stops at the first refusal.
+Redis answers the buyer in one round trip. `Pipeline.reserve` in `server/src/queue/pipeline.ts` runs the `RESERVE` script from `server/src/queue/scripts.ts`, and Redis runs that whole script as one command. The script does up to 6 steps, and it stops at the first refusal. Before step 1 it checks that `sale:live` and `sale:sold` both exist. Where either key is gone, Redis lost the sale, and the script answers `lost` rather than count.
 
 1. `GET sale:sold`. If the count already reached the stock, the buyer reads `sold-out`. Nothing is written anywhere.
 2. `SADD sale:buyers`. If the member was already in the set, the buyer holds a unit and the answer is `already-bought`.
 3. `INCR sale:sold`. The number it returns is the buyer's place in the queue. Because Redis runs one command at a time, two buyers never get the same number.
 4. `SREM sale:buyers`, only if that place passed the stock. The loser holds nothing, and the set has no reason to remember them.
 5. `HSET sale:outbox`, the buyer to their place. The Kafka send clears the entry, so a row left behind is a win Kafka never received.
+6. `HSET sale:issued`, the buyer to the same place. The worker clears the entry only after Postgres commits the order row. So a row left here is a place Postgres does not hold yet, and a rebuild has to count it.
 
-Kafka gets one record for a winner's place, and the buyer is the key. A reconciler sweeps `sale:outbox` every 250 ms and sends each leftover row again.
+Kafka gets one record for a winner's place, and the buyer is the key. A reconciler sweeps `sale:outbox` every 250 ms and sends each leftover row again. A rebuild after a Redis loss reads the order rows and `sale:issued` together. A place in flight sits in neither the order table nor a cleared outbox.
 
 The script is what makes steps 2 to 4 safe together. As 3 separate commands, a parallel request from a buyer who lost at step 3 could read the set between step 2 and step 4. It then answered `already-bought` for a unit nobody won. No other client runs inside the script, so that gap is gone.
 
@@ -219,7 +220,7 @@ I ran this on a box with an Intel Core Ultra 9 275HX, 24 cores, 62 GB RAM and No
 | `GET /api/sale` throughput | 31,991 a second, p50 13 ms, p99 51 ms | `npm run bench` |
 | `POST /api/purchase` throughput | 33,274 a second, p50 13 ms, p99 31 ms | `npm run bench` |
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
-| Tests | 75 over 11 files: 23 unit, 52 integration against real Postgres, Redis and Kafka | `npm test` |
+| Tests | 77 over 11 files: 23 unit, 54 integration against real Postgres, Redis and Kafka | `npm test` |
 
 The purchase route is as fast as the read route, and Redis answers both. The earlier version opened a Postgres transaction on every purchase and ran at 11,529 a second. Redis raised the refusal path by 2.9 times.
 
@@ -300,7 +301,7 @@ stress/   the correctness run, and the throughput bench
 | High throughput, and a design that scales | the Measured and Scaling sections. Each number names its command. The write is already off the request path |
 | Robustness and fault tolerance | a slow database costs drain time and no answers. A rolled-back transaction writes no order. A lost Redis is rebuilt from the order rows, and `max(seq)` gives the next place, never the row count |
 | Concurrency control, with no overselling | `INCR` in Redis, then the row lock in the `UPDATE`, proved by the 10,000-buyer run and by 21 injected faults |
-| Unit and integration tests | 23 unit tests in `server/test/unit/` and `web/test/unit/`, run by `npm run test:unit`. 52 integration tests in `server/test/integration/` and `web/test/integration/`, run by `npm run test:integration` against real Postgres, Redis and Kafka through testcontainers |
+| Unit and integration tests | 23 unit tests in `server/test/unit/` and `web/test/unit/`, run by `npm run test:unit`. 54 integration tests in `server/test/integration/` and `web/test/integration/`, run by `npm run test:integration` against real Postgres, Redis and Kafka through testcontainers |
 | Stress tests, and an explanation of the results | `npm run stress` for the counts, `npm run bench` for the speed, and the Measured section for the reading |
 | TypeScript, Node with Fastify, React | all three, type checked by `npm run build` |
 | Ready for managed services | every store is a managed product, and nothing is mocked. The Scaling section holds the target picture |
