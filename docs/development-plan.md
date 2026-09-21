@@ -11,7 +11,7 @@ Columns  | ID | Title | Status | Paths it owns | T-nn covering it |
 
 One product has limited stock. Far more buyers arrive than there are units.
 
-The system must sell every unit exactly once. It refuses a second unit to the same buyer. It refuses any purchase outside the sale window.
+The system must sell every unit exactly once. It refuses a second unit to the same buyer and any purchase outside the sale window.
 
 The project ends when a stress run proves all three rules. 10,000 buyers compete for 1,000 units. The run reports exactly 1,000 winners and exactly 9,000 refusals. The order table holds exactly 1,000 rows.
 
@@ -46,8 +46,8 @@ flowchart TD
 ```
 
 Two processes run: the Fastify server, which holds the workers, and the page. Redis, Kafka and
-Postgres run in Docker. GitHub renders a fenced `mermaid` block, so the README carries the diagram
-with no build step and no committed image.
+Postgres run in Docker. GitHub renders a fenced `mermaid` block, so the diagram lives in the
+README — no build step, no image to commit.
 
 ## Components
 
@@ -86,7 +86,7 @@ flash-sale/
     bench.ts              the autocannon run, for requests per second
 ```
 
-All source lives under two prefixes: `server/src` and `web/src`. Nothing at the root holds logic.
+All source lives under two prefixes: `server/src` and `web/src`.
 
 ## Endpoints
 
@@ -97,11 +97,11 @@ All source lives under two prefixes: `server/src` and `web/src`. Nothing at the 
 | `POST /api/purchase` | `{userId}` | `{outcome}`, one of `won`, `already-bought`, `sold-out`, `not-open`, `over` | 400 with `{error}` for a missing or empty `userId`. 500 with `{error}` when Redis does not answer, and never an outcome. |
 | `GET /api/purchase/:userId` | the buyer identifier in the path | `{held: true\|false, at}` | 400 for an empty identifier. 503 with `{error}` when Postgres does not answer, because "no row" and "cannot read" are different answers. |
 
-**The error contract is the point of this table.** A refusal and a fault must never look the same to the page.
+A refusal and a fault must look different to the page. That is what the error column defines.
 
 ## Integration
 
-`docker compose up -d` starts Redis, Kafka and Postgres for the app. `npm run dev` starts the server and the page. `npm test` needs no compose step, because testcontainers starts its own set. `npm run stress` proves the whole system: it opens the sale, drives 10,000 buyers over 500 connections, then reads Postgres.
+`docker compose up -d` starts Redis, Kafka and Postgres for the app. `npm run dev` starts the server and the page. `npm test` does not need the compose stack, because testcontainers starts its own set. `npm run stress` opens the sale, drives 10,000 buyers over 500 connections, then reads Postgres.
 
 ## Task table
 
@@ -129,8 +129,7 @@ the row names the replacement, and "What changed after the plan" below says why.
 
 ## What changed after the plan was written
 
-The plan above was written before the code. Two parts of it were replaced during the build, and the
-rows already name the files that ship. The table below says what moved, and why.
+The plan was written before the code. Two parts changed during the build, and the rows already name the files that ship.
 
 | Planned | Ships | Why it changed |
 | --- | --- | --- |
@@ -140,32 +139,19 @@ rows already name the files that ship. The table below says what moved, and why.
 | D-13 grounds every row of a concept map | dropped | The map was a planning tool. It shipped no behaviour, and its tests read the map rather than the code |
 | Three document tests read the README and the decision log | dropped | A test that reads prose turned red on every edit, and it proved nothing about the sale |
 
-`docs/design-experiments.md` holds the 9 designs that were built and measured, and the 21 faults
-that were injected into them. It is the evidence behind the first two rows.
+`docs/design-experiments.md` holds the 9 designs we built and measured and the 21 faults we injected into them, which is the evidence behind the first two rows.
 
 ## What the build found
 
-Six findings from the build that no unit test would have reached. Each one is now covered.
+Six findings from the build that no unit test would have reached, and each one now has a test behind it.
 
-1. **`npm start` had never worked.** `node --experimental-strip-types` deletes types and rewrites
-   nothing, so a constructor parameter property is a SyntaxError. 6 of them were in the server.
-   Vitest compiles the TypeScript, so no test saw it. `server/test/strip.spec.ts` now reads every
-   file under `server/src` through `stripTypeScriptTypes`.
-2. **`npm start` had never read `.env`.** The scripts carried no `--env-file`, so the documented
-   start command stopped at boot and named every missing variable.
-3. **A shared table raced.** Two test files that share one `orders` table wipe each other, because
-   the files run in parallel. Each file now migrates its own Postgres schema.
-4. **Kafka's own offset commit loses rows.** `autoCommit` on a timer left an offset past a row the
-   worker never wrote, and 201 of 1,000 rows never landed. The offset now lives in Postgres, in the
-   same transaction as the order row.
-5. **The drain check counted the wrong records.** A replay and a duplicate buyer are one record
-   twice, so neither may count. Counted, the check reported success at 49 of 50 rows.
-6. **Testing Library cleans up only under `globals: true`.** Without `cleanup` in an `afterEach`,
-   4 of the 7 page tests read `Found multiple elements`.
+1. `npm start` had never worked. `node --experimental-strip-types` only deletes types, so a constructor parameter property is a SyntaxError. 6 of them were in the server. Vitest compiles the TypeScript, so no test saw it. `server/test/strip.spec.ts` now reads every file under `server/src` through `stripTypeScriptTypes`.
+2. `npm start` had never read `.env`. The scripts carried no `--env-file`, so the documented start command stopped at boot and named every missing variable.
+3. A shared table raced. Two test files share one `orders` table and wipe each other, because the files run in parallel. Each file now migrates its own Postgres schema.
+4. Kafka's own offset commit loses rows. `autoCommit` on a timer left an offset past a row the worker never wrote, and 201 of 1,000 rows never landed. The offset now lives in Postgres, in the same transaction as the order row.
+5. The drain check counted the wrong records. A replay and a duplicate buyer are one record twice, so neither may count. With those in the count, the check reported success at 49 of 50 rows.
+6. Testing Library cleans up only under `globals: true`. Without `cleanup` in an `afterEach`, 4 of the 7 page tests read `Found multiple elements`.
 
-**The stress run refuses a host that is not local.** It empties the sale and truncates the orders
-table, so `assertLocal` rejects any hostname outside localhost. `STRESS_ALLOW_HOST` overrides it.
+The stress run requires localhost. It empties the sale and truncates the orders table, so `assertLocal` rejects any hostname outside localhost. `STRESS_ALLOW_HOST` overrides it.
 
-**autocannon reports the throughput and never the counts.** Its `amount` option is a per-connection
-quota, and issue #228 measured 999,969 requests sent for a requested 1,000,000 with no error. So
-`stress/run.ts` owns every count, and `stress/bench.ts` owns the latency.
+autocannon reports throughput. Its request counts are approximate, because `amount` is a per-connection quota, and issue #228 measured 999,969 requests for a requested 1,000,000 with no error. So `stress/run.ts` owns every count, and `stress/bench.ts` owns the latency.

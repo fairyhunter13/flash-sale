@@ -15,121 +15,121 @@ Columns  | ID | Title | S-nn | D-nn covered | Status | Test node ID | Risk | Tie
 
 Under test: the Redis pipeline, the four routes, the Kafka workers, the page and the stress run. The runner is vitest. Every tier above E1 runs against a real Redis 7, a real Kafka 4 and a real Postgres 16. testcontainers starts all three inside the test run.
 
-**Named exclusions, each with its reason.**
+Four things are excluded.
 
-- **No deployment.** Nothing is deployed, so no E4 row exists.
-- **No authentication.** The person types a buyer identifier, so the system trusts it. The README says so, because an unstated trust is a hole.
-- **No payment.** The sale records a win and takes no money.
-- **No browser matrix.** Tests use the React testing library, not browsers.
+- No deployment test exists because nothing is deployed.
+- The person types a buyer identifier and the system trusts it. The README says so, because an unstated trust is a hole.
+- The sale records a win and takes no money, so no payment path exists to test.
+- Tests use the React testing library. No browser matrix.
 
 ## Scenarios
 
-**S-01 Two buyers reach for the last unit.**
+S-01 Two buyers reach for the last unit.
 Precondition: the sale is open and 1 unit is left.
 Action: two different buyers send a purchase at the same time.
 Expected result: one answer is `won`, and the other is `sold-out`.
-Postcondition: the count is 0 and never below it. Exactly 1 new record is on the topic.
+Postcondition: the count is 0 and does not go below it. Exactly 1 new record is on the topic.
 
-**S-02 The same buyer attempts twice.**
+S-02 The same buyer attempts twice.
 Precondition: the sale is open, units are left, and buyer A holds a unit.
 Action: buyer A sends a second purchase.
-Expected result: the answer is `already-bought`, not `sold-out`.
+Expected result: the answer is `already-bought`. The server does not return `sold-out` for a repeat buyer.
 Postcondition: the count does not change. No new record is on the topic.
 
-**S-03 An attempt before the sale opens.**
+S-03 An attempt before the sale opens.
 Precondition: the clock is before the start time.
 Action: a buyer sends a purchase.
 Expected result: the answer is `not-open`.
 Postcondition: the count does not change, and no buyer is recorded.
 
-**S-04 An attempt after the sale ends.**
+S-04 An attempt after the sale ends.
 Precondition: the clock is after the end time, and units are left.
 Action: a buyer sends a purchase.
 Expected result: the answer is `over`.
 Postcondition: the count does not change.
 
-**S-05 Ten thousand buyers race for one thousand units.**
+S-05 Ten thousand buyers race for one thousand units.
 Precondition: the sale is open with 1,000 units, and a worker runs.
 Action: 10,000 different buyers send one purchase each over 500 connections.
 Expected result: exactly 1,000 answers are `won`, and exactly 9,000 are `sold-out`. The server answers every request.
 Postcondition: the order table holds exactly 1,000 rows, and each `user_id` appears once.
 
-**S-06 A buyer asks again after the answer is lost.**
+S-06 A buyer asks again after the answer is lost.
 Precondition: buyer A won a unit, and the worker wrote the row.
 Action: buyer A reads their own purchase state.
 Expected result: `held` is true.
 Postcondition: the count stays the same, and no second unit is taken.
 
-**S-07 The sale state is read.**
+S-07 The sale state is read.
 Precondition: the sale is open with units left.
 Action: a caller reads the sale.
 Expected result: `state` is `open`, and `stockLeft` is the real count.
 Postcondition: a sale read takes no unit.
 
-**S-08 A win becomes an order row.**
+S-08 A win becomes an order row.
 Precondition: one record is on the `sale.wins` topic, and a worker runs.
 Action: the worker reads the record.
 Expected result: the worker inserts one row for that buyer.
 Postcondition: one transaction writes the order row, the unit and the offset together.
 
-**S-09 A worker restarts with wins unread.**
+S-09 A worker restarts with wins unread.
 Precondition: 50 records are on the topic, and the worker is stopped.
 Action: the worker starts.
 Expected result: the worker seeks to the stored offset and reads all 50.
 Postcondition: the order table holds 50 rows.
 
-**S-10 The database refuses a second row for one buyer.**
+S-10 The database refuses a second row for one buyer.
 Precondition: an order row exists for buyer A.
 Action: a worker reads a second record for buyer A.
 Expected result: the unique index refuses the insert, and the worker does not stop.
 Postcondition: the order table holds exactly 1 row for buyer A.
 
-**S-11 A store does not answer.**
+S-11 A store does not answer.
 Precondition: the database is unreachable.
 Action: a buyer sends a purchase.
-Expected result: 500 with an `error` field, and no `outcome` field at all.
-Postcondition: nothing is recorded. A fault must not look like a refusal.
+Expected result: 500 with an `error` field. The response carries no `outcome` field.
+Postcondition: nothing is recorded.
 
-**S-12 The page names each outcome.**
+S-12 The page names each outcome.
 Precondition: the page is open, and the server answers a known outcome.
 Action: the person types a buyer identifier and presses the button.
 Expected result: the page shows the sentence for that outcome, and the five sentences differ.
 Postcondition: the page holds the outcome until the person attempts again.
 
-**S-13 The page shows the state of the sale.**
+S-13 The page shows the state of the sale.
 Precondition: the sale is not open yet, and the page is loaded.
 Action: the person reads the page before any attempt.
-Expected result: the page names the state and the units left, and the page refuses the button while the state is not `open`.
+Expected result: the page names the state and the units left. The page refuses the button while the state is not `open`.
 Postcondition: a page load takes no unit.
 
-**S-14 Postgres does not answer.**
+S-14 Postgres does not answer.
 Precondition: Postgres is unreachable, and Redis answers normally.
 Action: a buyer reads their own purchase state.
-Expected result: 503 with an `error` field, and no `held` field at all.
-Postcondition: the page says something went wrong. The page never says that the buyer holds nothing.
+Expected result: 503 with an `error` field. The response carries no `held` field.
+Postcondition: the page says something went wrong. The page does not tell the buyer they hold nothing.
 
-**S-15 The sale opens while the page is open.**
+S-15 The sale opens while the page is open.
 Precondition: the page holds an open stream, and the sale state is `pending`.
 Action: the sale start time passes.
 Expected result: the page shows `open` with no reload.
 Postcondition: the page closes its stream when the component unmounts, and the server holds no connection for it.
 
-**S-16 The server restarts during a live sale.**
+S-16 The server restarts during a live sale.
 Precondition: the sale is open, and some units are already sold.
 Action: the server boots again.
 Expected result: the count in Redis keeps the sold units, so the boot rebuilds nothing.
-Postcondition: a unit already sold stays sold. A restart returns no unit.
+Postcondition: a unit already sold stays sold.
 
-**S-17 Redis is lost while Postgres survives.**
-Precondition: Postgres holds the order rows, and Redis holds no counter. Redis answers that after a restart with no saved data, and after a replica is promoted.
+S-17 Redis is lost while Postgres survives.
+Precondition: Postgres holds the order rows, and Redis holds no counter. Redis answers that way after a restart with no saved data, and after a replica is promoted.
 Action: the server boots.
 Expected result: the server rebuilds the counter and the buyer set from the order rows.
-Postcondition: the next buyer gets the next place, and no unit is handed out twice.
+Postcondition: the next buyer gets the next place. No unit goes to two buyers.
 
-**S-18 The reviewer starts the server with no build step.**
+S-18 The reviewer starts the server with no build step.
 Precondition: a fresh clone, and `npm install` ran.
 Action: the reviewer runs `npm start`.
-Expected result: the server listens and answers. `node --experimental-strip-types` deletes types and rewrites nothing, so a constructor parameter property, an enum or a namespace is a SyntaxError.
+Expected result: the server listens and answers. `node --experimental-strip-types` strips type annotations without transforming code, so a constructor parameter property, an enum or a namespace is a SyntaxError.
 Postcondition: no source file holds syntax that strip-only mode refuses.
 
 ## Cases
@@ -184,33 +184,28 @@ Postcondition: no source file holds syntax that strip-only mode refuses.
 
 ## User journeys
 
-**J-01 A buyer wins.** The buyer opens the page before the sale. The page shows `pending`. The sale opens. The page shows `open` without a reload. The buyer types an identifier and presses the button. The page confirms the unit is theirs. A reload shows the same answer. Acceptance: the order table holds that buyer. The second answer comes from the record, not from memory.
+J-01, a buyer wins. The buyer opens the page before the sale. The page shows `pending`. The sale opens, and the page shows `open` without a reload. The buyer types an identifier and presses the button. The page confirms the unit is theirs. Acceptance: the order table holds that buyer. A reload shows the same answer, read from the record.
 
-**J-02 A buyer loses.** Stock is 1. Another buyer took it. The buyer attempts. The page says sold out. Acceptance: the message says sold out, never "already bought". The two refusals are different facts. The page tells the buyer which one happened.
+J-02, a buyer loses. Stock is 1. Another buyer took it. The buyer attempts, and the page says sold out. Acceptance: the page distinguishes "sold out" from "already bought" and shows the buyer which one applies.
 
-**J-03 The stress run.** `docker compose up -d`, then `npm run stress`. Acceptance: the run prints the three counts and the command that produced them. A reader can repeat it.
+J-03, the stress run. `docker compose up -d`, then `npm run stress`. Acceptance: the run prints the three counts and the command that produced them.
 
-**J-04 A reviewer reads the repository.** The reviewer clones, runs `npm install`, runs `npm test`, and reads the README. Acceptance: no step needs a command the README does not name. The test run starts its own Redis and Postgres. The diagram renders on the GitHub page.
+J-04, a reviewer reads the repository. The reviewer clones, runs `npm install`, runs `npm test`, and reads the README. Acceptance: every command appears in the README. The test run starts its own Redis and Postgres, and the diagram renders on the GitHub page.
 
 ## Experience bar
 
-- **A refusal and a fault never look alike.** `sold-out` means the sale ran out. A Redis failure is a 500, and the page says something went wrong, not that the sale ended.
-- **An error names the valid set.** A bad `userId` is answered with what a `userId` must be.
-- **No silent empty answer.** `GET /api/purchase/:userId` for a buyer who never bought answers `held: false`. A Postgres read failure answers 503. The two are different answers.
+- A refusal and a fault never look alike. `sold-out` means the sale ran out. A Redis failure is a 500, and the page says something went wrong.
+- An error names the valid set. A bad `userId` is answered with what a `userId` must be.
+- No silent empty answer. `GET /api/purchase/:userId` for a buyer who never bought answers `held: false`. A Postgres read failure answers 503.
 
 ## Fixtures
 
-Real, and named. `redis:7` and `postgres:16`, started by testcontainers in
-`server/test/setup/containers.ts` for every E3 run, with a port allocated per run. The same two
-images run under `docker-compose.yml` for the app and for the stress run. The 10,000 buyer
-identifiers are generated in `stress/run.ts` and are unique by construction. No mock stands in for
-Redis or for Postgres in any E3 row. T-12 and T-24 each simulate a dead engine by closing the real
-connection, not by a mock.
+`redis:7` and `postgres:16` are real containers, started by testcontainers in `server/test/setup/containers.ts` for every E3 run, each on its own port. The same two images run under `docker-compose.yml` for the app and the stress run. `stress/run.ts` generates the 10,000 buyer identifiers, unique by construction. No mock stands in for Redis or Postgres in any E3 row. T-12 and T-24 each simulate a dead engine by closing the real connection.
 
 ## Traceability
 
 Three checks, each one command.
 
-1. **Every claimed node ID is collected.** `npx vitest list --json=/tmp/nodes.json` against the node IDs in this file. `vitest list` ignores `--reporter`, so `--json=<path>` is the form that writes anything. A row that names a test the runner does not collect proves nothing.
-2. **Every `T-nn` names at least one `D-nn`, and every `D-nn` is named by at least one `T-nn`.** An `awk` pass over both documents.
-3. **The map agrees.** A build of the map over this root reports 60 open gaps. All 60 are named. 56 are parts the builder derived from the code that no sentence gives a reason for. 4 are qualities that conceptor cannot yet grade. T-20, T-43, T-44 and T-45 cover the part a check can read. They run in the suite with no Python and no conceptor install.
+1. The output of `npx vitest list --json=/tmp/nodes.json` must contain every claimed node ID in this file. `vitest list` ignores `--reporter`, so `--json=<path>` is the form that writes anything. A row that names a test the runner does not collect proves nothing.
+2. Every `T-nn` names at least one `D-nn`, and every `D-nn` is named by at least one `T-nn`, checked by an `awk` pass over both documents.
+3. The map agrees. A build of the map over this root reports 60 open gaps, and all 60 are named. 56 are parts the builder derived from the code that no sentence gives a reason for. 4 are qualities that conceptor cannot yet grade. T-20, T-43, T-44 and T-45 cover the part a check can read. They run in the suite with no Python and no conceptor install.
