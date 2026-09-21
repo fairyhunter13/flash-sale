@@ -35,7 +35,7 @@ Run `npm run db:migrate`. The command `npm start` also runs the migrations, and 
 
 `npm test` runs all 77 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
 
-The 54 integration tests use real Postgres, Redis and Kafka through testcontainers, and I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
+The 54 integration tests use real Postgres, Redis and Kafka. Testcontainers starts each one in Docker for the run and throws it away after. I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
 
 `npm run dev` runs the server and Vite together. Vite serves the page on `http://127.0.0.1:5173`, and it also proxies `/api` requests to the server.
 
@@ -71,7 +71,7 @@ PASS
 
 That number grows with the records the topic already holds, so a repeat run reads higher than the first one. Against a new `sale.wins` topic I measured 770 ms and 773 ms. The same build read 1,387 ms, 2,411 ms and 3,078 ms on the third, fourth and fifth run. `npm run db:down` and `npm run db:up` drop the topic and return the number to the first reading.
 
-I measured `4 Postgres backends` at peak against 500 open sockets, with `DB_POOL_MAX` set to 20. Only workers and page reads touch the pool, and the buyer path skips it. See [Scaling](#scaling).
+Postgres runs one operating system process per open connection, and that process is a backend. I measured `4 Postgres backends` at peak against 500 open sockets, with `DB_POOL_MAX` set to 20. Only workers and page reads touch the pool, and the buyer path skips it. See [Scaling](#scaling).
 
 `npm run bench` measures throughput with autocannon, but it skips count checks. Autocannon reads its `amount` as a per-connection quota.
 
@@ -164,11 +164,12 @@ Three places refuse, and each one refuses a different thing.
 
 Redis decides the winner. `INCR sale:sold` returns a unique number on each call: 1, then 2, and so on. Redis runs one command at a time, so 10,000 buyers who arrive together get 10,000 different numbers. A buyer whose number passes the stock loses, and I drop them from the set. I used no lock and no transaction.
 
-Kafka carries each win once, and in order, for one buyer. I key each record by the buyer, and one buyer always lands on one partition, where that partition keeps its order. The producer runs idempotent, and kafkajs then forces `acks: -1`, which waits for every in-sync replica. A retried send writes one record. The consumer reads `read_committed`.
+Kafka carries each win once, and in order, for one buyer. Kafka splits a topic into partitions, and each partition keeps its own order. I key each record by the buyer, so one buyer always lands on one partition. The producer runs idempotent, which means a record sent twice lands once. kafkajs then forces `acks: -1`, and a send waits for every Kafka copy that is caught up. A retried send writes one record. The consumer reads `read_committed`, so it never sees a record from a transaction that did not commit.
 
 Postgres refuses the oversell a second time. `Gate.record` runs one transaction that stops at the first statement to refuse.
 
-1. `INSERT INTO queue_offsets ... ON CONFLICT DO NOTHING`, then
+1. An offset is a record's position in its partition, and `queue_offsets` remembers the next one.
+   `INSERT INTO queue_offsets ... ON CONFLICT DO NOTHING`, then
    `SELECT next_offset ... FOR UPDATE`. Every path grabs this lock first. Two workers on one partition then run one after the other. When the lock came second, it deadlocked against the stock row. I first saw that deadlock at 100 parallel records. A record whose offset is below `next_offset` stops here and answers `replayed`, because the database already applied it.
 2. `INSERT INTO orders (user_id, seq) ... ON CONFLICT DO NOTHING RETURNING user_id`. If no row comes back, the table already holds that buyer or that place. Neither one takes a second unit from the count. The clause names no constraint, so it covers `orders_seq_key` as well as `orders_user_id_key`. Named, a repeat place raised `23505` and stopped the partition for good.
 3. `UPDATE stock SET units_left = units_left - 1 WHERE id = 1 AND units_left > 0 RETURNING
@@ -245,7 +246,7 @@ Database connections are the bottleneck people expect. They are not one here. At
 
 Three stores are more than one flash sale needs. The split is what makes each store fail on its own.
 
-A single writer that keeps the count in one process runs 2.5 times faster, and it cannot survive a second process. A fence that makes it safe costs a third of that speed, and it still lost 477 acknowledged wins when I killed the process. With the split I injected 2 seconds of delay into the Postgres link. The sale kept answering at 1,740 decisions a second, with all 1,000 wins intact. The same fault against a design that writes the order inside the request committed 0 wins, and the buyer never heard an answer.
+One process can own the count instead, with every buyer going through that one process and nothing else writing it. That is a single writer, and it runs 2.5 times faster. A second process breaks it. Making it safe costs a third of that speed, and it still lost 477 acknowledged wins when I killed the process. With the split I injected 2 seconds of delay into the Postgres link. The sale kept answering at 1,740 decisions a second, with all 1,000 wins intact. The same fault against a design that writes the order inside the request committed 0 wins, and the buyer never heard an answer.
 
 [`docs/architecture.md`](docs/architecture.md#redis-decides-the-winner-and-postgres-keeps-the-record) gives the full argument and the four costs.
 

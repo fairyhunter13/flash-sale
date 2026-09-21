@@ -26,7 +26,7 @@ A buyer who wins hears so at once. The order row reaches Postgres a few millisec
 3. Inside that window, one Redis setting carries the durability. Redis appends every change to a file and flushes it once a second under `appendfsync everysec`, so a power cut can cost up to a second of acknowledged wins. A `kill -9` is different. It ends the process, the file survives, and the container lost 0 of 15,619 acknowledged writes.
 4. A gap between two stores needs a repair path. The worker writes its resume point in the same transaction as the order row.
 
-A faster design exists. A single writer that holds the count in one process runs 2.5 times faster. It cannot survive a second process, and a fence that makes it safe costs a third of that speed. It still lost 477 acknowledged wins when I killed the process. Speed that loses an acknowledged win is not a trade this sale can take.
+A faster design exists. Let one process own the count, send every buyer through it, and let nothing else write. That is a single writer, and it runs 2.5 times faster. A second process breaks it. Making it safe needs a fence. A fence is a guard that stops the old owner from writing once a new one takes over. It costs a third of that speed. The single writer still lost 477 acknowledged wins when I killed the process. Speed that loses an acknowledged win is not a trade this sale can take.
 
 ## The record store is Postgres and not SQLite
 
@@ -77,12 +77,12 @@ The insert uses `ON CONFLICT DO NOTHING`. A replay is then silent, and it needs 
 Exactly-once has three levels, and the code reaches two of them.
 
 - **Delivery.** Two systems cannot agree on one commit. No code reaches it.
-- **Processing.** The consumption bookmark commits inside the same transaction as the effect. The code reaches this level.
+- **Processing.** The worker keeps a bookmark, which is the place it resumes reading from. It writes that bookmark inside the same transaction as the effect. The code reaches this level.
 - **Effect.** The sink refuses a repeat on its own. The code reaches this level too.
 
 Kafka transactions cover what Kafka writes. A Postgres row sits outside them. Redpanda states the same limit for its own broker: exactly-once holds "only when the consumer's output is sent to a Kafka topic itself and not to other remote syncs". KIP-939 was designed to let a Kafka producer join an external transaction. Its public APIs were reverted from Kafka 4.1, 4.2, 4.3 and 4.4. A broker swap does not move the boundary.
 
-**That boundary is why `queue_offsets` exists.** The table holds the bookmark, and `Gate.record` writes it in the same transaction as the order row. A record whose offset sits below the bookmark is already applied. `Gate.record` returns `replayed` before it reaches the insert. Delete the table and the design drops to at-least-once delivery, with the exactly-once effect resting on `UNIQUE (user_id)` alone.
+**That boundary is why `queue_offsets` exists.** The table holds the bookmark, and `Gate.record` writes it in the same transaction as the order row. A record whose offset sits below the bookmark is already applied. `Gate.record` returns `replayed` before it reaches the insert. Delete the table and the design drops to at-least-once delivery, where one record can arrive more than once. The exactly-once effect then rests on `UNIQUE (user_id)` alone.
 
 The consumer runs with `autoCommit: false`. A per-worker timer commits to Kafka only offsets that Postgres already wrote. The Kafka bookmark can never run ahead of the record. There is no `seek`. Kafka says where to resume, and a wrong answer there costs time. Postgres says what was applied, and only Postgres is a correctness claim.
 
@@ -90,7 +90,7 @@ A crash between the two commits replays the record, and the guard refuses it. A 
 
 The manual commit also keeps the standard lag metric honest. `kafka-consumer-groups --describe --group sale-writers` reads the offset the worker wrote after its Postgres `COMMIT`, so the lag it prints is work Postgres has not taken yet.
 
-**Order survives 4 workers.** Each worker carries the number `INCR` issued, all the way into `orders.seq`. The 4 workers write in whatever order they finish, and rows arrive out of order. By arrival time I counted 19, 487 and 460 inversions across three runs. `ORDER BY seq` showed 0 inversions in every run.
+**Order survives 4 workers.** Each worker carries the number `INCR` issued, all the way into `orders.seq`. The 4 workers write in whatever order they finish, and rows arrive out of order. By arrival time I counted 19, 487 and 460 pairs in the wrong order across three runs. `ORDER BY seq` showed 0 such pairs in every run.
 
 ## Losing a store, and getting it back
 
@@ -98,9 +98,9 @@ Redis holds the count, and the count is the sale. So the design has to answer wh
 
 Two detectors find the loss, and both end in one rebuild from the order rows.
 
-1. **The two keys the script checks first.** `RESERVE` refuses before it counts where either `sale:live` or `sale:sold` is gone, and it answers `lost`. `Pipeline.reserve` then rebuilds and asks once more. `REHYDRATE` writes the counter even at 0, so the counter is a liveness proof of its own. It writes the flag last. A script that dies half way then leaves the sale refused rather than wrong.
+1. **The two keys the script checks first.** `RESERVE` refuses before it counts where either `sale:live` or `sale:sold` is gone, and it answers `lost`. `Pipeline.reserve` then rebuilds and asks once more. `REHYDRATE` writes the counter even at 0. A counter that exists is the proof that Redis still holds the sale. It writes the flag last. A script that dies half way then leaves the sale refused rather than wrong.
 
-   An earlier build guarded on `sale:live` alone. Delete only `sale:sold`, which is what one evicted key looks like, and the flag still passed the guard. `INCR` then restarted at 1 and handed a buyer a place Postgres already held. `orders` holds `UNIQUE (seq)`, so Postgres rejected the row. The buyer still read `won` for a unit they do not hold.
+   An earlier build guarded on `sale:live` alone. Delete only `sale:sold`. Redis drops a key on its own when it runs out of memory, and the deletion looks the same. The flag still passed the guard. `INCR` then restarted at 1 and handed a buyer a place Postgres already held. `orders` holds `UNIQUE (seq)`, so Postgres rejected the row. The buyer still read `won` for a unit they do not hold.
 2. **The counter check in the sweep.** A deletion cannot get past the check above. A counter rewritten to a lower number can, and the sweep is what catches that. Redis issues the place, and Postgres records it later. While Redis is whole, `sale:sold` is never below `MAX(orders.seq)`. The sweep reads one indexed `MAX(seq)` every 250 ms.
 
 The rebuild reads two sources, because Postgres alone does not hold every place. A win travels from the script to Kafka, and then to the order table. A place in flight sits in neither source that the rebuild can read. So `RESERVE` writes the buyer and the place into `sale:issued` in the same command that issues them. The worker deletes that entry later, after Postgres commits the order row. An entry left in the hash is a place Postgres does not hold yet.
@@ -127,13 +127,13 @@ At 500 open sockets only 4 connections are ever in use. Redis answers the buyer 
 
 A bounded pool turns a database failure into a wait inside the application, and that wait has a limit you can see. An arrival spike lands in Kafka instead, where the workers drain it at whatever rate the pool allows.
 
-When one process is not enough, PgBouncer goes in front of Postgres in transaction mode. It multiplexes thousands of client connections onto tens of server ones. Size `pool_size` from the core count, never from the client count. PostgreSQL 18 added asynchronous I/O, and it still ships no built-in pooler.
+When one process is not enough, PgBouncer goes in front of Postgres in transaction mode. In that mode a client holds a server connection for one transaction only, and thousands of clients then share tens of server connections. Size `pool_size` from the core count, never from the client count. PostgreSQL 18 added asynchronous I/O, and it still ships no built-in pooler.
 
 ### The one stock row
 
 Every queue worker takes its unit with an `UPDATE` on row `id = 1`. Those writes run one at a time. Redis already answered, and the buyer waits for none of it. At 1,000 units the serialized writes finish fast. At 1,000,000 units the drain is the wall.
 
-The change is `N` stock rows of `stock / N`, with each buyer hashed to one row. It gives up a perfect sell-out: one shard can empty while another still holds units. It pays off only at a large unit count, where the imbalance stays small.
+The change is `N` stock rows of `stock / N`, with each buyer hashed to one row. It gives up a perfect sell-out: one of those rows can empty while another still holds units. It pays off only at a large unit count, where the imbalance stays small.
 
 ### Accepting the load before it reaches the API
 
@@ -164,4 +164,4 @@ The picture below draws every change above. I built none of it. Each box names t
 
 The place number restores the arrival order for a reader, and the rows do not *land* in that order. A reader who sorts by insert order still sees the wrong list. Only a single writer fixes that, and the cost of a single writer is in the first section.
 
-One Redis key is one point of failure for the sale it serves. A busy launch needs a key per sale. A hash tag lands both keys of a sale on one node, and the counter stays correct after that change. Correctness here is a per-key property. The design implies the result. I never measured it.
+One Redis key is one point of failure for the sale it serves. A busy launch needs a key per sale. Both keys of one sale have to live on one node. A hash tag does that, because Redis picks the node from the part of the key name inside braces. Name them `{sale1}:sold` and `{sale1}:buyers`, and the counter stays correct after the change. Correctness here is a per-key property. The design implies the result. I never measured it.
