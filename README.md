@@ -18,15 +18,24 @@ npm start                # migrates the database, then serves on :3000
 
 Open `http://127.0.0.1:3000`. One server serves both the page and the API, and there is no CORS.
 
-The sale is one row in the database. The file `server/sql/migrations/0002_campaign.sql` writes 1,000 units, and it sets a start in 2026 and an end in 2036. So the sale is open the moment you start. Edit that file to see the other states.
+The sale is one row in the database. The file `server/sql/migrations/0002_campaign.sql` writes 1,000 units, and it sets a start in 2026 and an end in 2036. So the sale is open the moment you start.
+
+To move the window, run `npm run sale:window`. The server picks the change up within one sweep, which is 250 ms, and it needs no restart.
+
+```sh
+npm run sale:window -- --start 2026-10-01T09:00:00Z --end 2026-10-01T10:00:00Z
+npm run sale:window -- --start 2026-10-01T09:00:00Z --end 2026-10-01T10:00:00Z --units 500
+```
+
+Without `--units` the unit count does not move, so a running sale keeps what it already sold. With `--units` the count is set again, and Redis must be empty before the sale opens.
 
 Run `npm run db:migrate`. The command `npm start` also runs the migrations, and a fresh clone needs no extra step.
 
 `.env` holds addresses and sizes only. Postgres, Redis or Kafka may already run on your machine. If one already runs, change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT`, and change the URL beside it.
 
-`npm test` runs all 72 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
+`npm test` runs all 75 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
 
-The 49 integration tests use real Postgres, Redis and Kafka through testcontainers, and I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
+The 52 integration tests use real Postgres, Redis and Kafka through testcontainers, and I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
 
 `npm run dev` runs the server and Vite together. Vite serves the page on `http://127.0.0.1:5173`, and it also proxies `/api` requests to the server.
 
@@ -166,7 +175,7 @@ Postgres refuses the oversell a second time. `Gate.record` runs one transaction 
 
 A commit writes the order row, the decrement, and the new resume point together. A rollback writes none of them.
 
-[`docs/decisions.md`](docs/decisions.md#what-the-queue-worker-guarantees) covers repeats, crashes and arrival order.
+[`docs/architecture.md`](docs/architecture.md#what-the-queue-worker-guarantees) covers repeats, crashes and arrival order, and it says why `queue_offsets` cannot be dropped.
 
 Four guards protect the count.
 
@@ -181,11 +190,11 @@ The last two guards live in `server/sql/migrations/0001_tables.sql`. Each one ha
 
 ## Why the Redis decision is one script and not a transaction
 
-`Pipeline.reserve` uses no `MULTI` and no `WATCH`. It runs one Lua script, and Redis runs that script as one command. A `MULTI` block answers every command at the end, so it cannot branch on what `SADD` returned. [`docs/decisions.md`](docs/decisions.md#why-the-redis-decision-is-one-script-and-not-a-transaction) has the full argument.
+`Pipeline.reserve` uses no `MULTI` and no `WATCH`. It runs one Lua script, and Redis runs that script as one command. A `MULTI` block answers every command at the end, so it cannot branch on what `SADD` returned. [`docs/architecture.md`](docs/architecture.md#one-redis-script-replaces-a-lock) has the full argument.
 
 ## What happens when something breaks
 
-Each row is a fault I injected and measured. All 21 runs sit in the fault table at [`docs/design-experiments.md`](docs/design-experiments.md#every-fault-and-what-it-read).
+Each row is a fault I injected and measured.
 
 | What breaks | What the buyer gets | What the record shows |
 | --- | --- | --- |
@@ -210,7 +219,7 @@ I ran this on a box with an Intel Core Ultra 9 275HX, 24 cores, 62 GB RAM and No
 | `GET /api/sale` throughput | 31,991 a second, p50 13 ms, p99 51 ms | `npm run bench` |
 | `POST /api/purchase` throughput | 33,274 a second, p50 13 ms, p99 31 ms | `npm run bench` |
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
-| Tests | 72 over 11 files: 23 unit, 49 integration against real Postgres, Redis and Kafka | `npm test` |
+| Tests | 75 over 11 files: 23 unit, 52 integration against real Postgres, Redis and Kafka | `npm test` |
 
 The purchase route is as fast as the read route, and Redis answers both. The earlier version opened a Postgres transaction on every purchase and ran at 11,529 a second. Redis raised the refusal path by 2.9 times.
 
@@ -220,17 +229,32 @@ The load generator and the server share the same 24 cores, and the server is one
 
 ## Scaling
 
-[`docs/design-experiments.md`](docs/design-experiments.md#scaling) lists every bottleneck I hit, and each entry gives the measurement that found it and the change that moves it. It names PgBouncer, N stock rows, more API processes, a waiting room, and more partitions.
+Four things break first, in this order.
+
+1. **The single Node process**, when it runs out of open sockets. Fastify holds no state, so `N` processes behind one load balancer answer `N` times the requests. One Redis still holds the count, and no process decides alone.
+2. **Redis, on one CPU core.** Its commands run on one thread, so the whole decision path sits on that core. The ceiling is still high.
+3. **The queue drain**, once wins arrive faster than the workers retire them. A buyer never feels it, and the lag on `GET /api/purchase/:userId` grows instead. More partitions and a higher `QUEUE_WORKERS` raise the drain rate.
+4. **The single stock row**, far above 1,000 units. Every worker takes its unit with an `UPDATE` on row `id = 1`, so those writes run one at a time. The change is `N` stock rows of `stock / N`, which gives up a perfect sell-out.
+
+Database connections are the bottleneck people expect, and they are not one here. At 500 open sockets with `DB_POOL_MAX` set to 20, Postgres held 4 backends at the peak, because Redis answers the buyer path and only the workers and the page reads touch the pool. Past one process, PgBouncer in transaction mode multiplexes thousands of client connections onto tens of server ones.
+
+[`docs/architecture.md`](docs/architecture.md#scaling) gives each measurement, plus the waiting room and the target picture at a million buyers.
 
 ## Why Redis, a queue and a database
 
-I tried nine designs and measured each against the same 10,000 buyers. The table lives in [`docs/design-experiments.md`](docs/design-experiments.md#why-redis-a-queue-and-a-database), and it explains why this design wins on shape, even though two of the nine answer faster.
+Three stores are more than one flash sale needs. The split is what makes each store fail on its own.
+
+A single writer that keeps the count in one process runs 2.5 times faster. It cannot survive a second process, a fence that makes it safe costs a third of that speed, and it still lost 477 acknowledged wins when I killed the process.
+
+With the split, I injected 2 seconds of delay into the Postgres link and the sale kept answering buyers at 1,740 decisions a second, with all 1,000 wins intact. A design that writes the order inside the request committed 0 wins when Postgres stopped, and the buyer never heard an answer.
+
+[`docs/architecture.md`](docs/architecture.md#redis-decides-the-winner-and-postgres-keeps-the-record) gives the full argument and the four costs.
 
 ## Trade-offs
 
 I split the work across three stores, and each one can fail on its own without taking the other two down. Redis decides who wins, Kafka carries the orders, and Postgres records them. The buyer never waits for a database write, and arrival spikes land in a log instead. A slow database only adds drain time.
 
-The cost is two more containers. There is also a window where Redis holds a win that Postgres does not have yet. I measured both costs in [`docs/design-experiments.md`](docs/design-experiments.md#why-redis-a-queue-and-a-database).
+The cost is two more containers. There is also a window where Redis holds a win that Postgres does not have yet. I measured both costs, and [`docs/architecture.md`](docs/architecture.md#redis-decides-the-winner-and-postgres-keeps-the-record) gives the numbers.
 
 I make the decision with one Lua script, and I use no transaction. The script costs me a second language that no type checker reads, and it buys two things that four plain commands could not. A parallel request from a buyer who lost at `INCR` no longer reads `already-bought` for a unit nobody won. A crash right after `INCR` no longer burns a unit, because the script writes `sale:outbox` in the same command and a sweep re-sends what Kafka never got. [Why the Redis decision is one script and not a transaction](#why-the-redis-decision-is-one-script-and-not-a-transaction) gives the argument, and `server/test/integration/pipeline.spec.ts` gives the proof.
 
@@ -259,7 +283,7 @@ stress/   the correctness run, and the throughput bench
 | `docker-compose.yml` | Postgres 16, Redis 7 with `appendfsync everysec`, and Kafka 4 in KRaft mode, where Kafka keeps its own metadata and needs no ZooKeeper |
 | `.env.example` | every address and size the server reads, with no constant hidden in source |
 | `server/sql/migrations/` | the tables, then the campaign row. `npm start` and `npm run db:migrate` both apply them, once each |
-| `docs/design-experiments.md` | the 9 designs that were built and measured, and why this one ships |
+| `docs/architecture.md` | why the system has this shape, what each choice costs, and how it scales |
 
 ## What the sale does, and where
 
@@ -276,7 +300,7 @@ stress/   the correctness run, and the throughput bench
 | High throughput, and a design that scales | the Measured and Scaling sections. Each number names its command. The write is already off the request path |
 | Robustness and fault tolerance | a slow database costs drain time and no answers. A rolled-back transaction writes no order. A lost Redis is rebuilt from the order rows, and `max(seq)` gives the next place, never the row count |
 | Concurrency control, with no overselling | `INCR` in Redis, then the row lock in the `UPDATE`, proved by the 10,000-buyer run and by 21 injected faults |
-| Unit and integration tests | 23 unit tests in `server/test/unit/` and `web/test/unit/`, run by `npm run test:unit`. 49 integration tests in `server/test/integration/` and `web/test/integration/`, run by `npm run test:integration` against real Postgres, Redis and Kafka through testcontainers |
+| Unit and integration tests | 23 unit tests in `server/test/unit/` and `web/test/unit/`, run by `npm run test:unit`. 52 integration tests in `server/test/integration/` and `web/test/integration/`, run by `npm run test:integration` against real Postgres, Redis and Kafka through testcontainers |
 | Stress tests, and an explanation of the results | `npm run stress` for the counts, `npm run bench` for the speed, and the Measured section for the reading |
 | TypeScript, Node with Fastify, React | all three, type checked by `npm run build` |
-| Ready for managed services | every store is a managed product, and nothing is mocked. `docs/design-experiments.md` holds the 9 measured designs. The Scaling section holds the target picture |
+| Ready for managed services | every store is a managed product, and nothing is mocked. The Scaling section holds the target picture |

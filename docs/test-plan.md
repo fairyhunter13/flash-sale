@@ -24,7 +24,7 @@ I tested the Redis pipeline, the four routes, the Kafka workers, the page and th
 
 The tier decides the folder, and a `unit` case lives in `server/test/unit/` and `web/test/unit/`. `npm run test:unit` runs those 23 while Docker is stopped.
 
-A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 48. `npm test` runs all 71.
+A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 52. `npm test` runs all 75.
 
 I left four things out.
 
@@ -125,6 +125,24 @@ Action: a worker reads that record.
 Expected result: `Gate.record` answers `already-recorded`, and it raises no error.
 Postcondition: the order table and the unit count do not move, and the resume point moves by 1.
 
+S-24 A Redis that loses the whole sale mid-run never issues a place twice.
+Precondition: 3 buyers hold a unit, and every Redis key of the sale is erased.
+Action: a fourth buyer sends a purchase.
+Expected result: `Pipeline.reserve` rebuilds from the order rows, then answers `won`.
+Postcondition: the places read 1, 2, 3 and 4, and no place is issued twice.
+
+S-25 A new sale window takes effect with no restart.
+Precondition: the sale is open, and the process is running.
+Action: `npm run sale:window` writes a window that already closed.
+Expected result: the next purchase reads `over` within one sweep, which is 250 ms.
+Postcondition: the unit count does not move.
+
+S-26 One erased key puts Redis behind Postgres, and the sweep repairs it.
+Precondition: `sale:sold` reads 0, the order table holds 3 rows, and `sale:live` survives.
+Action: the sweep runs.
+Expected result: `sale:sold` returns to 3.
+Postcondition: the units left read 7, and no place is issued twice.
+
 S-11 A store does not answer.
 Precondition: the database is unreachable.
 Action: a buyer sends a purchase.
@@ -222,6 +240,9 @@ Postcondition: no source file holds syntax that strip-only mode refuses.
 | T-47 | No buyer is told already-bought for a unit they never won | S-21 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > no buyer is told already-bought for a unit they never won | 12 | engine |
 | T-48 | A rebuild never lowers the counter | S-22 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a rebuild never lowers the counter | 7 | engine |
 | T-49 | A second buyer on a place already taken never stops the worker | S-23 | D-08 | done | server/test/integration/gate.spec.ts > the gate > a second buyer on a place already taken is refused, and the worker moves on | 15 | engine |
+| T-50 | A Redis that loses the whole sale mid-run never issues a place twice | S-24 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a Redis that loses the whole sale mid-run never issues a place twice | 14 | engine |
+| T-51 | A new sale window takes effect with no restart | S-25 | D-05 | done | server/test/integration/pipeline.spec.ts > the pipeline > a new sale window takes effect with no restart | 10 | engine |
+| T-52 | The sweep rebuilds the counter when one erased key puts Redis behind Postgres | S-26 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > the sweep rebuilds the counter when one erased key puts Redis behind Postgres | 16 | engine |
 | T-36 | Every server source file runs under strip-only mode | S-18 | D-01 | done | server/test/unit/strip.spec.ts > the source runs under node > every server source file strips cleanly | 10 | route |
 | T-37 | A lost Redis is rebuilt from the order rows | S-17 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a lost Redis is rebuilt from the order rows, and the next place is right | 14 | engine |
 | T-38 | The Buy Now button is refused while the sale is not open | S-03 | D-10 | done | web/test/unit/App.spec.tsx > the page > the button is refused while the sale is not open | 12 | unit |

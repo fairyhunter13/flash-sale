@@ -18,7 +18,7 @@ I end the project with one stress run: 10,000 buyers compete for 1,000 units. Th
 
 ## Decisions
 
-Each row says why I made the choice. `docs/decisions.md` holds the same decisions in the form the code shipped.
+Each row says why I made the choice. `docs/architecture.md` holds the same reasons in the form the code shipped.
 
 | Axis | Choice | Rejected | Evidence |
 | --- | --- | --- | --- |
@@ -72,7 +72,7 @@ flash-sale/
   tsconfig.base.json      the compiler settings all three share
   docker-compose.yml      redis:7  postgres:16  kafka, for running the app
   diagrams/               the two architecture diagrams the README shows
-  docs/                   this file, test-plan.md, decisions.md, design-experiments.md
+  docs/                   this file, architecture.md, test-plan.md
   server/
     src/                  config.ts server.ts, then routes/ gate/ queue/ db/
     src/routes/           sale.ts orders.ts stream.ts, one file per endpoint group
@@ -124,7 +124,7 @@ Each row lists the files it owns in the repository as it ships. Where I replaced
 | D-13 | Ground every concept row on the symbol that realizes it | dropped | — | T-20, T-43, T-44, T-45 |
 | D-14 | Write the scaling section of the README, and say what changes at 10 times the load | done | README.md, diagrams/architecture-scale.mmd | T-23 |
 | D-15 | Make the repository safe to publish, and prove a fresh clone runs | done | .gitignore, .env.example | T-26 |
-| D-16 | Write the decision log, one question and one answer for each decision | done | docs/decisions.md | T-27, T-42 |
+| D-16 | Write the architecture document, one reason for each choice | done | docs/architecture.md | T-27, T-42 |
 
 ## What changed after the plan was written
 
@@ -138,7 +138,7 @@ I wrote the plan before the code, and two parts changed during the build. The ro
 | D-13 grounds every row of a concept map | dropped | The map was a planning tool. It shipped no behaviour, and its tests read the map rather than the code |
 | Three document tests read the README and the decision log | dropped | A test that reads prose turned red on every edit, and it proved nothing about the sale |
 
-The first two rows come from `docs/design-experiments.md`. That file holds the 9 designs I built and measured, plus the 22 faults I injected into them.
+Both of the first two rows changed after a measurement. `docs/architecture.md` holds the reason each one changed.
 
 ## What the build found
 
