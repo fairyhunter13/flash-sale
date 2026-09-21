@@ -155,7 +155,7 @@ A clock is the wrong tool here, but the sale still has to give the memory back. 
 
 The start of the window works the same way. Redis takes the sale on 5 seconds before the start time, and it holds nothing before that. `ARM_MS` in `server/src/queue/pipeline.ts` is that lead. The sweep reads the window from Postgres 4 times a second. So a server that starts hours early still waits, and it builds the keys 5 seconds before the sale opens. The memory exists inside the sale alone, which is the one window where a big number is expected.
 
-I proved the drop under load. `npm run stress` drives 10,000 buyers at 1,000 units, closes the window, then waits for the sweep. Redis held 48,416 bytes over 5 keys at the peak. It held 0 bytes 157 ms later, and Postgres kept all 1,000 order rows.
+I proved the drop under load. `npm run stress` drives 10,000 buyers at 1,000 units, closes the window, then waits for the sweep. Redis held 48,416 bytes over 5 keys at the peak, in each of 6 runs. It held 0 bytes 53 ms to 359 ms later, and Postgres kept all 1,000 order rows every time.
 
 That leaves one trap, and it is in Postgres and not in Redis. The order rows outlive the campaign that wrote them. So a second campaign against the same database starts sold out. The first rebuild reads the old winners out of `orders`. It then sets the counter back to where the last sale ended. `UNIQUE (user_id)` also refuses a buyer who won the first time. Moving the window with `npm run sale:window` does not touch any of that. `npm run reset` drops Postgres, Redis and the Kafka topic together, and it is the only clean start for a second campaign.
 
