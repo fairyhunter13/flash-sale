@@ -114,9 +114,13 @@ the clock closes the window. A count that closes the sale breaks on the next era
 rebuild finds 0 sold, and it reopens a sale that already ended.
 
 The proof is a load run and not a unit test alone. `npm run stress` sends 10,000 buyers at 1,000
-units, moves the end time into the past, then reads Redis until it empties. Over 6 runs the peak
+units, moves the end time into the past, then reads Redis until it empties. Over 12 runs the peak
 was 48,416 bytes over 5 keys every time. The drop landed 53 ms to 359 ms after the close, and
-Postgres held all 1,000 rows. The spread is the sweep period of 250 ms plus the last worker.
+Postgres held all 1,000 rows.
+
+The spread is the wait for the next sweep. I measured that wait on its own 30 times, from a random
+point inside the 250 ms period. It read 26 ms to 255 ms, and the mean was 143 ms. So the delay is
+flat across one period, and it is not a fixed cost.
 
 **The trap is in Postgres, and not in Redis.** The order rows outlive the campaign that wrote them.
 A second campaign against the same database starts sold out. The first rebuild reads the old
