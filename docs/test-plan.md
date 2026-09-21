@@ -24,7 +24,7 @@ I tested the Redis pipeline, the four routes, the Kafka workers, the page and th
 
 The tier decides the folder, and a `unit` case lives in `server/test/unit/` and `web/test/unit/`. `npm run test:unit` runs those 23 while Docker is stopped.
 
-A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 43. `npm test` runs all 66.
+A `route` case and an `engine` case live in `server/test/integration/` and `web/test/integration/`, and `npm run test:integration` runs those 45. `npm test` runs all 68.
 
 I left four things out.
 
@@ -86,7 +86,7 @@ Postcondition: I write the order row, the unit and the offset in one transaction
 S-09 A worker restarts with wins unread.
 Precondition: 50 records are on the topic, and the worker is stopped.
 Action: the worker starts.
-Expected result: the worker seeks to the stored offset and reads all 50.
+Expected result: the worker reads all 50 from the topic.
 Postcondition: the order table holds 50 rows.
 
 S-10 The database refuses a second row for one buyer.
@@ -94,6 +94,12 @@ Precondition: an order row exists for buyer A.
 Action: a worker reads a second record for buyer A.
 Expected result: the unique index refuses the insert. The worker does not stop.
 Postcondition: the order table holds exactly 1 row for buyer A.
+
+S-19 A record below the resume point never reaches the stock.
+Precondition: `queue_offsets` holds a resume point past the record's offset.
+Action: a worker reads that record again.
+Expected result: `Gate.record` answers `replayed` before the insert runs.
+Postcondition: the order table and the unit count do not move.
 
 S-11 A store does not answer.
 Precondition: the database is unreachable.
@@ -186,6 +192,8 @@ Postcondition: no source file holds syntax that strip-only mode refuses.
 | T-34 | A record read twice writes no second row | S-10 | D-08 | done | server/test/integration/gate.spec.ts > the gate > the same record read twice writes one row | 16 | engine |
 | T-35 | The workers drain every win the buyers produced | S-08 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > Redis answers the buyer, and the database holds the same winners | 12 | engine |
 | T-30 | An insert that names the conflict writes no second row | S-10 | D-02, D-08 | done | server/test/integration/schema.spec.ts > the order table > the second insert writes no row when it names the conflict | 12 | engine |
+| T-40 | A record below the resume point never reaches the stock | S-19 | D-08 | done | server/test/integration/gate.spec.ts > the gate > the fence refuses a record below the watermark before it reaches the stock | 15 | engine |
+| T-41 | A worker that replays a whole partition writes no second row | S-19 | D-08 | done | server/test/integration/gate.spec.ts > the gate > a worker that replays a whole partition from offset 0 writes no second row | 14 | engine |
 | T-36 | Every server source file runs under strip-only mode | S-18 | D-01 | done | server/test/unit/strip.spec.ts > the source runs under node > every server source file strips cleanly | 10 | route |
 | T-37 | A lost Redis is rebuilt from the order rows | S-17 | D-08 | done | server/test/integration/pipeline.spec.ts > the pipeline > a lost Redis is rebuilt from the order rows, and the next place is right | 14 | engine |
 | T-38 | The Buy Now button is refused while the sale is not open | S-03 | D-10 | done | web/test/unit/App.spec.tsx > the page > the button is refused while the sale is not open | 12 | unit |

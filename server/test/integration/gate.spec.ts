@@ -150,4 +150,31 @@ describe('the gate', () => {
 
     expect(await gate.stockLeft()).toBe(999)
   })
+
+  // The record below the watermark carries a buyer nobody wrote. A second order
+  // row here proves the fence never ran.
+  it('the fence refuses a record below the watermark before it reaches the stock', async () => {
+    expect(await gate.record(win('buyer-a', 1))).toBe('written')
+    expect(await gate.record(win('buyer-b', 2))).toBe('written')
+    expect(await gate.offsetOf(TOPIC, 0)).toBe(2)
+
+    const below = { buyerId: 'buyer-c', seq: 3, topic: TOPIC, partition: 0, offset: 0 }
+
+    expect(await gate.record(below)).toBe('replayed')
+    expect(await orderCount()).toBe(2)
+    expect(await gate.stockLeft()).toBe(998)
+    expect(await gate.offsetOf(TOPIC, 0)).toBe(2)
+  })
+
+  // No seek exists now, so a rejoined worker can start at offset 0 again.
+  it('a worker that replays a whole partition from offset 0 writes no second row', async () => {
+    const batch = [win('buyer-a', 1), win('buyer-b', 2), win('buyer-c', 3)]
+    for (const one of batch) expect(await gate.record(one)).toBe('written')
+
+    for (const one of batch) expect(await gate.record(one)).toBe('replayed')
+
+    expect(await orderCount()).toBe(3)
+    expect(await gate.stockLeft()).toBe(997)
+    expect(await gate.offsetOf(TOPIC, 0)).toBe(3)
+  })
 })

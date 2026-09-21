@@ -197,8 +197,11 @@ export class Pipeline {
   }
 
   /**
-   * `autoCommit` is off because Kafka commits on a timer. A dead worker then
-   * leaves an offset past a row it never wrote. I lost 201 of 1,000 rows that way.
+   * `autoCommit` is off because a timer commits an offset the database never wrote.
+   * The commit below runs after the Postgres transaction, never before it.
+   *
+   * There is no `seek`. A replay from any earlier offset meets the fence in
+   * `Gate.record`, so the Kafka offset is a resume hint and costs only time.
    */
   private async startWorker(): Promise<void> {
     const consumer = this.kafka.consumer({
@@ -209,30 +212,6 @@ export class Pipeline {
     this.consumers.push(consumer)
     await consumer.connect()
     await consumer.subscribe({ topic: this.topic, fromBeginning: true })
-
-    // A group join can arrive before `run` returns, and `seek` refuses one
-    // then. So each seek waits for this promise.
-    let started: () => void = () => {}
-    const running = new Promise<void>((ready) => {
-      started = ready
-    })
-
-    consumer.on(consumer.events.GROUP_JOIN, ({ payload }) => {
-      const mine = payload.memberAssignment[this.topic] ?? []
-      void (async () => {
-        try {
-          await running
-          for (const partition of mine) {
-            const next = await this.gate.offsetOf(this.topic, partition)
-            consumer.seek({ topic: this.topic, partition, offset: String(next) })
-          }
-        } catch (error) {
-          // A failed seek on a closing consumer costs nothing. The next owner
-          // seeks to the same row.
-          console.error(`the worker could not seek: ${(error as Error).message}`)
-        }
-      })()
-    })
 
     await consumer.run({
       autoCommit: false,
@@ -251,8 +230,10 @@ export class Pipeline {
         else if (done === 'replayed') this.counts.replayed += 1
         else if (done === 'duplicate-buyer') this.counts.duplicateBuyers += 1
         else this.counts.refusedByDatabase += 1
+        await consumer.commitOffsets([
+          { topic, partition, offset: String(Number(message.offset) + 1) },
+        ])
       },
     })
-    started()
   }
 }

@@ -61,9 +61,10 @@ const MISSING = 'the stock row is missing. Run npm run db:migrate.'
  * Redis decides who wins. So this class never answers a buyer. It says what
  * the database does with one record from the queue.
  *
- * Kafka's exactly-once stops at the broker. The offset cannot live there.
- * `record` writes it with the order in one transaction. The unique `user_id`
- * refuses a repeat. The offset is only a resume point.
+ * Kafka's exactly-once stops at the broker, so a Postgres write is outside it.
+ * `record` writes the offset with the order in one transaction, then refuses any
+ * record below that offset. Kafka says where to resume. Postgres says what was
+ * applied, and only Postgres is a correctness claim.
  */
 export class Gate {
   private readonly pool: Pool
@@ -103,11 +104,18 @@ export class Gate {
       const seen = await client.query<{ next_offset: string }>(READ_OFFSET, where)
       const read = Number(seen.rows[0]?.next_offset ?? 0)
 
+      // Below the watermark the record is already applied. Stopping here is the
+      // exactly-once guard. The unique `user_id` is only the second one.
+      if (read > win.offset) {
+        await client.query('COMMIT')
+        return 'replayed'
+      }
+
       const taken = await client.query(TAKE_BUYER, [win.buyerId, win.seq])
       if (taken.rowCount === 0) {
         await client.query(BUMP_OFFSET, ahead)
         await client.query('COMMIT')
-        return read > win.offset ? 'replayed' : 'duplicate-buyer'
+        return 'duplicate-buyer'
       }
 
       const unit = await client.query<{ units_left: number }>(TAKE_UNIT)
@@ -151,10 +159,7 @@ export class Gate {
     return rows.map((row) => ({ buyerId: row.user_id, seq: Number(row.seq ?? 0) }))
   }
 
-  /**
-   * 0 where no worker read the partition. One transaction wrote this row and the
-   * order row. A new owner seeks here.
-   */
+  /** 0 where no worker read the partition. One transaction wrote it and the order row. */
   async offsetOf(topic: string, partition: number): Promise<number> {
     const { rows } = await this.pool.query<{ next_offset: string }>(
       'SELECT next_offset FROM queue_offsets WHERE topic = $1 AND partition = $2',
