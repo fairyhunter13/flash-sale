@@ -299,7 +299,7 @@ and Kafka 4 in Docker. Every number below names the command that produced it.
 | `GET /api/sale` throughput | 31,991 a second, p50 13 ms, p99 51 ms | `npm run bench` |
 | `POST /api/purchase` throughput | 33,274 a second, p50 13 ms, p99 31 ms | `npm run bench` |
 | Errors and non-2xx under load | 0 and 0 | `npm run bench` |
-| Tests | 62 over 11 files, against real Postgres, Redis and Kafka | `npm test` |
+| Tests | 66 over 11 files, against real Postgres, Redis and Kafka | `npm test` |
 
 **The purchase route is now as fast as the read route, and that is the whole point of the design.**
 Both are answered by Redis. The earlier version opened a Postgres transaction on every purchase and
