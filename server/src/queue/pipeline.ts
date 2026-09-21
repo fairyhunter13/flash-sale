@@ -125,9 +125,14 @@ export class Pipeline {
     const pipeline = new Pipeline(options)
     await pipeline.redis.connect()
     await pipeline.admin.connect()
-    await pipeline.admin.createTopics({
-      topics: [{ topic: pipeline.topic, numPartitions: PARTITIONS, replicationFactor: 1 }],
-    })
+    // `createTopics` makes the broker log an error when the topic is already
+    // there, so every restart printed one. Reading the list first keeps it quiet.
+    const topics = await pipeline.admin.listTopics()
+    if (!topics.includes(pipeline.topic)) {
+      await pipeline.admin.createTopics({
+        topics: [{ topic: pipeline.topic, numPartitions: PARTITIONS, replicationFactor: 1 }],
+      })
+    }
     await pipeline.producer.connect()
     for (const source of [RESERVE, REHYDRATE]) pipeline.shas.set(source, await pipeline.redis.scriptLoad(source))
     await pipeline.restoreIfEmpty()

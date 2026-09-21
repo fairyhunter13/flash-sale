@@ -9,14 +9,24 @@ I wrote it in TypeScript on Node 24. Fastify runs the API, Redis 7 makes the dec
 You need Node 24 or newer and Docker.
 
 ```sh
-cp .env.example .env     # ports and addresses only
 npm install
-npm run db:up            # Postgres, Redis and Kafka in Docker
-npm run build            # type checks 3 workspaces, and builds the page
-npm start                # migrates the database, then serves on :3000
+npm start
 ```
 
 Open `http://127.0.0.1:3000`. One server serves both the page and the API, and there is no CORS.
+
+There is no configuration step and no separate database step. `npm start` starts Postgres, Redis and Kafka in Docker, waits for each one, builds the page, migrates the database, then serves. It reads `.env.example`, which the clone already holds.
+
+One command covers each job:
+
+| Job | Command |
+| --- | --- |
+| Run it | `npm start` |
+| Work on it, with reload | `npm run dev` |
+| Run the tests | `npm test` |
+| Move the sale window | `npm run sale:window` |
+| Start the sale over | `npm run reset` |
+| Throw it all away | `npm run db:down` |
 
 One row in the database is the whole sale. `server/sql/migrations/0002_campaign.sql` writes 1,000 units, a start in 2026 and an end in 2036. The sale is open the moment you start.
 
@@ -29,17 +39,15 @@ npm run sale:window -- --start 2026-10-01T09:00:00Z --end 2026-10-01T10:00:00Z -
 
 Without `--units` the unit count does not move, so a running sale keeps what it already sold. With `--units` the count is set again, and Redis must be empty before the sale opens.
 
-Run `npm run db:migrate`. The command `npm start` also runs the migrations, and a fresh clone needs no extra step.
-
-`.env` holds addresses and sizes only. Postgres, Redis or Kafka may already run on your machine. If one already runs, change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT`, and change the URL beside it.
+`.env.example` holds addresses and sizes only, and the server reads it on every start. Postgres, Redis or Kafka may already run on your machine. Where one does, copy `.env.example` to `.env`, then change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT` and the URL beside it. The server reads `.env` second, so it wins. Docker Compose reads `.env` as well, which is why a port change belongs there and not in `.env.example`.
 
 `npm test` runs all 77 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
 
 The 54 integration tests use real Postgres, Redis and Kafka. Testcontainers starts each one in Docker for the run and throws it away after. I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
 
-`npm run dev` runs the server and Vite together. Vite serves the page on `http://127.0.0.1:5173`, and it also proxies `/api` requests to the server.
+`npm run dev` starts the containers, then runs the server and Vite together. Vite serves the page on `http://127.0.0.1:5173`, and it also proxies `/api` requests to the server. The server reloads when you save a file.
 
-`npm run db:down` removes the container and its data. Stop the server first. When a server outlives its broker, it holds a producer sequence the new broker never issued. Every send then fails with `out of order sequence number`, and the failures continue until you restart the server.
+`npm run db:down` removes the container and its data. Stop the server first. `npm run reset` does the same and starts again, so a sold-out sale returns to 1,000 units. When a server outlives its broker, it holds a producer sequence the new broker never issued. Every send then fails with `out of order sequence number`, and the failures continue until you restart the server.
 
 ## Run the stress test
 
@@ -69,7 +77,7 @@ PASS
 
 `queue drained in 718 ms` is the gap between the last buyer getting an answer and the last order row landing in Postgres. Redis answers the buyer first, and a worker writes the row to Postgres later.
 
-That number grows with the records the topic already holds, so a repeat run reads higher than the first one. Against a new `sale.wins` topic I measured 770 ms and 773 ms. The same build read 1,387 ms, 2,411 ms and 3,078 ms on the third, fourth and fifth run. `npm run db:down` and `npm run db:up` drop the topic and return the number to the first reading.
+That number grows with the records the topic already holds, so a repeat run reads higher than the first one. Against a new `sale.wins` topic I measured 770 ms and 773 ms. The same build read 1,387 ms, 2,411 ms and 3,078 ms on the third, fourth and fifth run. `npm run reset` drops the topic and returns the number to the first reading.
 
 Postgres runs one operating system process per open connection, and that process is a backend. I measured 4 to 5 `Postgres backends` at peak against 500 open sockets, over 23 runs, with `DB_POOL_MAX` set to 20. Only workers and page reads touch the pool, and the buyer path skips it. See [Scaling](#scaling).
 
@@ -280,7 +288,7 @@ stress/   the correctness run, and the throughput bench
 | `diagrams/architecture-scale.mmd`, `diagrams/architecture-scale.svg` | the target shape at a much larger load |
 | `docker-compose.yml` | Postgres 16, Redis 7 with `appendfsync everysec`, and Kafka 4 in KRaft mode, where Kafka keeps its own metadata and needs no ZooKeeper |
 | `.env.example` | every address and size the server reads, with no constant hidden in source |
-| `server/sql/migrations/` | the tables, then the campaign row. `npm start` and `npm run db:migrate` both apply them, once each |
+| `server/sql/migrations/` | the tables, then the campaign row. The server applies them at boot, once each |
 | `docs/architecture.md` | why the system has this shape, what each choice costs, and how it scales |
 
 ## What the sale does, and where

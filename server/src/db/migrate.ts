@@ -1,7 +1,5 @@
 import { readFileSync, readdirSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { Pool, type PoolClient } from 'pg'
-import { readConfig } from '../config.ts'
+import type { Pool, PoolClient } from 'pg'
 
 const DIRECTORY = new URL('../../sql/migrations/', import.meta.url)
 
@@ -58,22 +56,4 @@ export async function migrate(pool: Pool): Promise<readonly string[]> {
     client.release()
   }
   return applied
-}
-
-/** `npm run db:migrate`. The server migrates at boot, so this is for a database it never opens. */
-async function main(): Promise<void> {
-  const pool = new Pool({ connectionString: readConfig().databaseUrl, max: 1 })
-  try {
-    const applied = await migrate(pool)
-    console.log(applied.length === 0 ? 'the database is up to date' : `applied ${applied.join(', ')}`)
-  } finally {
-    await pool.end()
-  }
-}
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((error: unknown) => {
-    console.error(error)
-    process.exit(1)
-  })
 }

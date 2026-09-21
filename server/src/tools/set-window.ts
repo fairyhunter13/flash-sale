@@ -63,14 +63,14 @@ async function main(): Promise<void> {
         : [wanted.startAt, wanted.endAt, wanted.units],
     )
     const row = rows[0]
-    if (row === undefined) throw new Error('the stock row is missing. Run npm run db:migrate.')
+    if (row === undefined) throw new Error('the stock row is missing. Run npm start first.')
 
     console.log(
       `The sale runs ${wanted.startAt.toISOString()} to ${wanted.endAt.toISOString()}, ` +
         `with ${row.units_left} of ${row.total_units} units left.`,
     )
     if (wanted.units !== undefined) {
-      console.log('The unit count moved, so clear Redis before the sale opens: npm run db:down && npm run db:up')
+      console.log('The unit count moved, so clear Redis before the sale opens: npm run reset')
     }
   } finally {
     await pool.end()

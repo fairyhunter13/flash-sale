@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "node --env-file-if-exists=../.env --watch --experimental-strip-types src/server.ts",
-    "start": "node --env-file-if-exists=../.env --experimental-strip-types src/server.ts"
+    "dev": "node --env-file=../.env.example --env-file-if-exists=../.env --watch --experimental-strip-types src/server.ts",
+    "start": "node --env-file=../.env.example --env-file-if-exists=../.env --experimental-strip-types src/server.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.4",

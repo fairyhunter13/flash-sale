@@ -13,18 +13,18 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "dev": "concurrently -n server,web -c blue,green \"npm:dev -w server\" \"npm:dev -w web\"",
-    "start": "npm start -w server",
+    "dev": "npm run db:up && concurrently -n server,web -c blue,green \"npm:dev -w server\" \"npm:dev -w web\"",
+    "start": "npm run db:up && npm run build && npm start -w server",
     "test": "vitest run",
     "test:unit": "vitest run --project '*-unit'",
     "test:integration": "vitest run --project '*-integration'",
     "test:watch": "vitest",
     "stress": "npm run stress -w stress",
     "bench": "npm run bench -w stress",
-    "db:up": "docker compose up -d",
-    "db:migrate": "node --env-file-if-exists=.env --experimental-strip-types server/src/db/migrate.ts",
-    "sale:window": "node --env-file-if-exists=.env --experimental-strip-types server/src/tools/set-window.ts",
-    "db:down": "docker compose down -v"
+    "db:up": "docker compose up -d --wait",
+    "sale:window": "node --env-file=.env.example --env-file-if-exists=.env --experimental-strip-types server/src/tools/set-window.ts",
+    "db:down": "docker compose down -v",
+    "reset": "npm run db:down && npm start"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

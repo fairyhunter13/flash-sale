@@ -54,7 +54,7 @@ async function reset(pool: Pool, redis: RedisLike): Promise<number> {
     'UPDATE stock SET units_left = total_units WHERE id = 1 RETURNING total_units',
   )
   const stock = rows[0]?.total_units
-  if (stock === undefined) throw new Error('the campaign row is missing. Run npm run db:migrate.')
+  if (stock === undefined) throw new Error('the campaign row is missing. Run npm start first.')
   await redis.del([SOLD_KEY, BUYERS_KEY, OUTBOX_KEY, ISSUED_KEY])
   // The running server still holds the old count for one cache window.
   await new Promise((done) => setTimeout(done, CACHE_MS * 2))

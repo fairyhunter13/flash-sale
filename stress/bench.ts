@@ -22,7 +22,7 @@ async function openTheSale(): Promise<void> {
   try {
     await pool.query('TRUNCATE orders')
     const { rowCount } = await pool.query('UPDATE stock SET units_left = total_units WHERE id = 1')
-    if (rowCount === 0) throw new Error('the campaign row is missing. Run npm run db:migrate.')
+    if (rowCount === 0) throw new Error('the campaign row is missing. Run npm start first.')
     await new Promise((done) => setTimeout(done, CACHE_MS * 2))
   } finally {
     await pool.end()

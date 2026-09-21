@@ -58,7 +58,7 @@ const TAKE_UNIT =
 type SaleRow = { units_left: number; start_at: Date; end_at: Date }
 type CampaignRow = { total_units: number; start_at: Date; end_at: Date }
 
-const MISSING = 'the stock row is missing. Run npm run db:migrate.'
+const MISSING = 'the stock row is missing. Run npm start first.'
 
 /**
  * Redis decides who wins. So this class never answers a buyer. It says what
