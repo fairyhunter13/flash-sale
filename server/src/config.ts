@@ -28,14 +28,14 @@ export class ConfigError extends Error {
 
 type Env = Record<string, string | undefined>
 
-// Every problem is collected, because a boot that reports one missing variable
-// at a time costs the reader one restart for each one.
+// Every problem is collected. Otherwise the reader restarts once
+// for each missing variable.
 class Reader {
   readonly problems: string[] = []
   private readonly env: Env
 
   // A field and an assignment, never a constructor parameter property:
-  // `node --experimental-strip-types` rewrites nothing, so that is a SyntaxError.
+  // `node --experimental-strip-types` rewrites nothing. A parameter property is a SyntaxError.
   constructor(env: Env) {
     this.env = env
   }

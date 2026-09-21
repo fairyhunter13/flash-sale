@@ -24,7 +24,7 @@ const CACHE_MS = 250
 
 /**
  * The reset below empties the sale and the orders table, so this file must
- * never reach a shared host. A hostname outside the list is refused, and the
+ * never reach a shared host. A hostname outside the list is refused. The
  * operator can widen it with STRESS_ALLOW_HOST.
  */
 const LOCAL = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
@@ -43,8 +43,8 @@ type Tally = Record<string, number>
 
 /**
  * Puts every unit back, in both stores. The count returns to `total_units`, so
- * this file holds no number of its own. Redis holds the live count, so a reset
- * of Postgres alone leaves the sale sold out. `queue_offsets` stays, because a
+ * this file holds no number of its own. Redis holds the live count. A reset of
+ * Postgres alone leaves the sale sold out. `queue_offsets` stays. Otherwise a
  * worker that lost its row would seek to 0 and replay the previous run.
  */
 async function reset(pool: Pool, redis: RedisLike): Promise<number> {
@@ -63,8 +63,8 @@ async function reset(pool: Pool, redis: RedisLike): Promise<number> {
 type RedisLike = { del: (keys: string[]) => Promise<number>; quit: () => Promise<unknown> }
 
 /**
- * Waits until the order rows stop arriving. Redis answers `won` and the row
- * lands later, so a count read at the end of the drive is short. The wait ends
+ * Waits until the order rows stop arriving. Redis answers `won` before the
+ * row lands. So a count read at the end of the drive is short. The wait ends
  * on the wanted count, or on 10 quiet seconds. 10 and not 2: a 2.9 second fetch
  * pause made one run report 760 of 1,000 rows that all landed a moment later.
  */

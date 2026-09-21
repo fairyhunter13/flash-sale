@@ -41,9 +41,9 @@ export type PipelineCounts = {
  * `Gate.record` writes it down. The three stores never write each other, so
  * each one fails on its own.
  *
- * Kafka keeps order inside one partition only, and several workers write at
- * once. So the number `INCR` returns travels in the record into `orders.seq`,
- * and `ORDER BY seq` reads the arrival order whatever order the rows landed in.
+ * Kafka keeps order inside one partition only. Several workers write at
+ * once. The number `INCR` returns travels in the record into `orders.seq`.
+ * `ORDER BY seq` reads the arrival order, not the insertion order.
  */
 export class Pipeline {
   private readonly redis: RedisClientType
@@ -88,8 +88,8 @@ export class Pipeline {
     })
     this.admin = this.kafka.admin()
     this.producer = this.kafka.producer({
-      // The broker drops a record it already holds, so a retried send after a
-      // timeout writes one record and not two.
+      // The broker drops a record it already holds. So a retried send after
+      // a timeout writes one record, not two.
       idempotent: true,
       maxInFlightRequests: 5,
       createPartitioner: Partitioners.DefaultPartitioner,
@@ -114,7 +114,7 @@ export class Pipeline {
    *
    * The `GET` is a fast path and never the decision. `sale:sold` only goes up,
    * so a buyer refused there writes nothing. `INCR` past the stock is what
-   * refuses a buyer, so a stale read costs one call and never a wrong answer.
+   * refuses a buyer. A stale read costs one call and never a wrong answer.
    */
   async reserve(buyerId: string, nowMs: number = Date.now()): Promise<Outcome> {
     const state = saleState(nowMs, 1, this.window)
@@ -162,7 +162,7 @@ export class Pipeline {
     const until = Date.now() + limitMs
     while (Date.now() < until) {
       // A replay and a duplicate buyer are one record twice, so neither counts.
-      // Counted, this returned true at 49 of 50 rows on a 4-worker run.
+      // Counted, the check returned true at 49 of 50 rows on a 4-worker run.
       const done = this.counts.written + this.counts.refusedByDatabase
       if (done >= this.counts.produced) return true
       await new Promise((ready) => setTimeout(ready, 25))
@@ -173,8 +173,8 @@ export class Pipeline {
   /**
    * Rebuilds the hot state from the database. The counter comes from
    * `max(seq)`, never the row count, because a count would hand the next buyer
-   * a place an earlier buyer holds. A win still in Kafka has no order row, so
-   * the rebuild is exact only after the queue drains.
+   * a place an earlier buyer holds. A win still in Kafka has no order row.
+   * The rebuild is exact only after the queue drains.
    */
   async rehydrate(): Promise<{ buyers: number; highestSeq: number; ms: number }> {
     const startedAt = Date.now()
@@ -195,7 +195,7 @@ export class Pipeline {
 
   /**
    * No counter in Redis means Redis was lost, so rebuild. A counter is left
-   * alone, because a live Redis runs ahead of Postgres by what the queue holds.
+   * alone. A live Redis runs ahead of Postgres by what the queue holds.
    */
   private async restoreIfEmpty(): Promise<void> {
     if ((await this.redis.exists(this.soldKey)) === 1) return
@@ -206,7 +206,7 @@ export class Pipeline {
   }
 
   /**
-   * One consumer, with Postgres as the only offset store. `autoCommit` is off:
+   * One consumer, with Postgres as the only offset store. `autoCommit` is off.
    * Kafka commits on a timer, so a dead worker can leave an offset past a row
    * it never wrote. Measured on this design, 201 of 1,000 rows never landed.
    */

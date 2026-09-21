@@ -1,12 +1,12 @@
 import Fastify from 'fastify'
 import { Pool } from 'pg'
-import { poolFor, writeCampaign } from './setup/db.ts'
+import { poolFor, writeCampaign } from '../setup/db.ts'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
-import type { Config } from '../src/config.ts'
-import { Gate } from '../src/gate/gate.ts'
-import type { Pipeline } from '../src/queue/pipeline.ts'
-import { registerRoutes } from '../src/routes/index.ts'
-import { buildApp, type App } from '../src/server.ts'
+import type { Config } from '../../src/config.ts'
+import { Gate } from '../../src/gate/gate.ts'
+import type { Pipeline } from '../../src/queue/pipeline.ts'
+import { registerRoutes } from '../../src/routes/index.ts'
+import { buildApp, type App } from '../../src/server.ts'
 
 const START = Date.parse('2026-06-01T00:00:00Z')
 const END = Date.parse('2036-06-01T00:00:00Z')
@@ -158,7 +158,7 @@ describe('the routes', () => {
   })
 
   it('a dead database gives 500 and no outcome', async () => {
-    // Port 1 answers nothing, so the routes hold a real Gate over a pool that
+    // Port 1 answers nothing. The routes hold a real Gate over a pool that
     // cannot reach a server.
     const dead = new Pool({
       connectionString: 'postgres://flash:flash@127.0.0.1:1/flash',

@@ -52,8 +52,8 @@ export class SaleTicker {
     if (this.timer === undefined) return
     clearInterval(this.timer)
     this.timer = undefined
-    // The next page to connect must see the state at once, so the memory of
-    // the last body is dropped with the timer.
+    // The next page to connect must see the state at once. The timer drops
+    // the memory of the last body.
     this.last = ''
   }
 
@@ -68,7 +68,7 @@ export class SaleTicker {
       body = JSON.stringify(await readSale(this.gate, this.pipeline))
     } catch {
       // A store stopped answering. An open stream would show a stale count as
-      // a live one, so every page is closed.
+      // a live one. So every page is closed.
       this.closeAll()
       return
     }
@@ -84,8 +84,8 @@ function write(reply: FastifyReply, body: string): void {
 
 export function registerStream(app: FastifyInstance, ticker: SaleTicker): void {
   app.get('/api/sale/stream', async (request, reply) => {
-    // hijack hands the socket to this handler, so Fastify never ends the
-    // response and the connection stays open for the life of the page.
+    // hijack hands the socket to this handler. Fastify never ends the
+    // response, and the connection stays open for the life of the page.
     reply.hijack()
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',

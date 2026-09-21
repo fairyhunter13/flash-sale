@@ -1,8 +1,8 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { App } from '../src/App.tsx'
-import type { Api, Held, Outcome, SaleView } from '../src/api.ts'
+import { App } from '../../src/App.tsx'
+import type { Api, Held, Outcome, SaleView } from '../../src/api.ts'
 
 const OPEN: SaleView = {
   state: 'open',
@@ -11,10 +11,7 @@ const OPEN: SaleView = {
   endsAt: '2036-01-01T00:00:00.000Z',
 }
 
-/**
- * App takes the whole server surface as a prop, so a test builds a plain
- * object here. Nothing is patched onto the global scope.
- */
+
 function fakeApi(over: Partial<Api> = {}, sale: SaleView | undefined = OPEN): Api {
   return {
     watchSale(onSale) {

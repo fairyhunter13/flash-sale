@@ -12,9 +12,9 @@ export type SaleView = {
 
 /**
  * The window comes from the table, because that is what a restart reads back.
- * The count comes from Redis, because that is what decides. A count read from
- * Postgres would lag the sale by whatever the queue still holds, so the page
- * would offer a unit that is already gone.
+ * The count comes from Redis. Redis is what decides. Because a Postgres count
+ * would lag the sale by whatever the queue still holds, the page would offer
+ * a unit that is already gone.
  */
 export async function readSale(gate: Gate, pipeline: Pipeline, nowMs: number = Date.now()): Promise<SaleView> {
   const { startMs, endMs } = await gate.snapshot()
@@ -33,7 +33,7 @@ export function registerRoutes(app: FastifyInstance, gate: Gate, pipeline: Pipel
       return await readSale(gate, pipeline)
     } catch {
       // A store that does not answer is a fault, and never a sold-out sale.
-      // The body carries no state field at all, so no caller can read one.
+      // The body carries no state field at all. No caller can read one.
       return reply.code(500).send({ error: 'the sale cannot be read' })
     }
   })

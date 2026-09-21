@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { saleState } from '../src/gate/status.ts'
+import { saleState } from '../../src/gate/status.ts'
 
 const WINDOW = {
   startMs: Date.parse('2026-06-01T00:00:00Z'),

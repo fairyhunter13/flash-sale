@@ -13,7 +13,7 @@ export type Outcome = 'won' | 'already-bought' | 'sold-out' | 'not-open' | 'over
 export type Held = { readonly held: true; readonly at: string } | { readonly held: false } | 'unknown'
 
 /**
- * Everything the page needs from the server. App takes it as a prop, so a test
+ * Everything the page needs from the server. App takes it as a prop. A test
  * passes a plain object and never patches `fetch` onto the global scope.
  */
 export type Api = {

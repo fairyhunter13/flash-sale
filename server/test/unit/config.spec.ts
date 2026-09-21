@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ConfigError, readConfig } from '../src/config.ts'
+import { ConfigError, readConfig } from '../../src/config.ts'
 
 const complete = {
   DATABASE_URL: 'postgres://flash:flash@localhost:5432/flash',

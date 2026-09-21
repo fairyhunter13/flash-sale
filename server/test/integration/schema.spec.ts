@@ -1,7 +1,7 @@
 import type { Pool } from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
-import { migrate, migrations } from '../src/db/migrate.ts'
-import { poolFor, writeCampaign } from './setup/db.ts'
+import { migrate, migrations } from '../../src/db/migrate.ts'
+import { poolFor, writeCampaign } from '../setup/db.ts'
 
 const START = Date.parse('2026-06-01T00:00:00Z')
 const END = Date.parse('2036-06-01T00:00:00Z')

@@ -3,8 +3,8 @@ import { migrate } from '../../src/db/migrate.ts'
 
 /**
  * One Postgres schema per test file, because the files run in parallel and a
- * DELETE in one wiped rows another had just written. The migrations run against
- * that schema, so every test meets the tables the server meets.
+ * DELETE in one wiped rows another had just written. Migrations run against
+ * that schema. Every test meets the tables the server meets.
  */
 export async function poolFor(databaseUrl: string, name: string): Promise<Pool> {
   const admin = new Pool({ connectionString: databaseUrl, max: 1 })

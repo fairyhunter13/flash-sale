@@ -3,7 +3,7 @@ import { join, relative } from 'node:path'
 import { stripTypeScriptTypes } from 'node:module'
 import { describe, expect, it } from 'vitest'
 
-const SRC = new URL('../src/', import.meta.url).pathname
+const SRC = new URL('../../src/', import.meta.url).pathname
 
 function everySourceFile(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

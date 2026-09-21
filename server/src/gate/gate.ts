@@ -38,8 +38,8 @@ const CLAIM_OFFSET = `INSERT INTO queue_offsets (topic, partition, next_offset) 
 const READ_OFFSET =
   'SELECT next_offset FROM queue_offsets WHERE topic = $1 AND partition = $2 FOR UPDATE'
 
-// GREATEST, because a rebalance can give two workers one partition for a
-// moment, and the later record must not pull the resume point backwards.
+// A rebalance can give two workers one partition for a moment. GREATEST
+// keeps the later record from pulling the resume point backwards.
 const BUMP_OFFSET = `INSERT INTO queue_offsets (topic, partition, next_offset) VALUES ($1, $2, $3)
    ON CONFLICT (topic, partition)
    DO UPDATE SET next_offset = GREATEST(queue_offsets.next_offset, EXCLUDED.next_offset)`
@@ -48,7 +48,7 @@ const TAKE_BUYER =
   'INSERT INTO orders (user_id, seq) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING RETURNING user_id'
 
 // `units_left > 0` stops the oversell. Postgres holds the one stock row for the
-// transaction, so a second worker reads the count only after the first commits.
+// transaction. A second worker reads the count only after the first commits.
 const TAKE_UNIT =
   'UPDATE stock SET units_left = units_left - 1 WHERE id = 1 AND units_left > 0 RETURNING units_left'
 
@@ -62,7 +62,7 @@ const MISSING = 'the stock row is missing. Run npm run db:migrate.'
  * answers a buyer. It answers one question: what the database does with one
  * record from the queue.
  *
- * Kafka's exactly-once stops at the broker, so the offset cannot live there.
+ * Kafka's exactly-once stops at the broker. The offset cannot live there.
  * `record` writes the order, the unit and the offset in one transaction.
  * The unique `user_id` refuses a repeat, and the offset is only a resume point.
  */
@@ -113,8 +113,8 @@ export class Gate {
 
       const unit = await client.query<{ units_left: number }>(TAKE_UNIT)
       if (unit.rowCount === 0) {
-        // The bump runs on this client, never a second one from the pool. A
-        // second one starves, because every client waits on this same path.
+        // The bump runs on this client, never a second one from the pool.
+        // Every client waits on this same path. A second one starves.
         await client.query('ROLLBACK')
         await client.query(BUMP_OFFSET, ahead)
         return 'no-unit-left'
@@ -154,8 +154,8 @@ export class Gate {
   }
 
   /**
-   * How far the workers read one partition, and 0 where none read it. A new
-   * owner seeks here, because one transaction wrote this row and the order row.
+   * How far the workers read one partition, and 0 where none read it. Because
+   * one transaction wrote this row and the order row, a new owner seeks here.
    */
   async offsetOf(topic: string, partition: number): Promise<number> {
     const { rows } = await this.pool.query<{ next_offset: string }>(

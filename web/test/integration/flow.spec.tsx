@@ -1,15 +1,10 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { App } from '../src/App.tsx'
-import { http } from '../src/api.ts'
+import { App } from '../../src/App.tsx'
+import { http } from '../../src/api.ts'
 
-/**
- * `App.spec.tsx` passes a plain object in, so it never reaches `api.ts`. This
- * file renders the page with the real `http` client and stubs the two browser
- * APIs it calls. The route names, the request body and the 503 path are covered
- * here and nowhere else.
- */
+
 class FakeSource {
   static last: FakeSource | undefined
   readonly url: string

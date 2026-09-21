@@ -5,8 +5,8 @@ import { readConfig } from '../config.ts'
 
 const DIRECTORY = new URL('../../sql/migrations/', import.meta.url)
 
-/** Postgres hands this lock to one caller, so 2 servers booting together
- * apply each file once between them. */
+/** Postgres hands this lock to one caller.
+ * 2 servers booting together apply each file once between them. */
 const LOCK_KEY = 8_713_220_101
 
 const LEDGER = `CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -28,7 +28,7 @@ export function migrations(): readonly Migration[] {
 }
 
 /**
- * Each file commits with its own ledger row, so a failed file leaves no
+ * Each file commits with its own ledger row. A failed file leaves no
  * half-applied schema. Never edit an applied file. A change is a new file.
  */
 export async function migrate(pool: Pool): Promise<readonly string[]> {

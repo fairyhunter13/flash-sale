@@ -1,8 +1,8 @@
 import type { Pool } from 'pg'
-import { poolFor, writeCampaign } from './setup/db.ts'
+import { poolFor, writeCampaign } from '../setup/db.ts'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest'
-import type { Config } from '../src/config.ts'
-import { buildApp, type App } from '../src/server.ts'
+import type { Config } from '../../src/config.ts'
+import { buildApp, type App } from '../../src/server.ts'
 
 const START = Date.parse('2026-06-01T00:00:00Z')
 const END = Date.parse('2036-06-01T00:00:00Z')
@@ -85,7 +85,7 @@ describe('the stream', () => {
 
     await app.pipeline.reserve('buyer-a', START + 60_000)
 
-    // A tick can fire between the first read and the purchase, so the next
+    // A tick can fire between the first read and the purchase. The next
     // block is not always the changed one. The test reads until the count
     // moves, and it fails on the limit rather than on the first block.
     const second = await eventWhere(events, (one) => one.stockLeft === 4)

@@ -1,8 +1,8 @@
 import type { Pool } from 'pg'
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from 'vitest'
-import { Gate } from '../src/gate/gate.ts'
-import { Pipeline } from '../src/queue/pipeline.ts'
-import { poolFor, writeCampaign } from './setup/db.ts'
+import { Gate } from '../../src/gate/gate.ts'
+import { Pipeline } from '../../src/queue/pipeline.ts'
+import { poolFor, writeCampaign } from '../setup/db.ts'
 
 const START = Date.parse('2026-06-01T00:00:00Z')
 const END = Date.parse('2036-06-01T00:00:00Z')
@@ -72,7 +72,7 @@ describe('the pipeline', () => {
     const again = await pipeline.reserve('loser', DURING)
 
     expect(lost).toBe('sold-out')
-    // Never already-bought. That buyer holds no order row, so the answer would
+    // Never already-bought. That buyer holds no order row. The answer would
     // name a purchase that does not exist.
     expect(again).toBe('sold-out')
   })
@@ -105,7 +105,7 @@ describe('the pipeline', () => {
     )
 
     // SADD returns 1 to one caller and 0 to the other 49, so only one call
-    // ever reaches INCR. That is why no MULTI/EXEC is needed here.
+    // ever reaches INCR. No MULTI/EXEC is needed.
     expect(answers.filter((one) => one === 'won')).toHaveLength(1)
     expect(answers.filter((one) => one === 'already-bought')).toHaveLength(49)
     expect(await pipeline.left()).toBe(9)
@@ -130,7 +130,7 @@ describe('the pipeline', () => {
     const rebuilt = await pipeline.rehydrate()
 
     expect(rebuilt.buyers).toBe(3)
-    // The count comes from max(seq) and never from the row count, so the next
+    // The count comes from max(seq), never from the row count. The next
     // buyer takes place 4 and not a place someone already holds.
     expect(rebuilt.highestSeq).toBe(3)
     expect(await pipeline.left()).toBe(7)
