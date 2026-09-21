@@ -128,6 +128,22 @@ The spread is the wait for the next sweep. I measured that wait on its own 30 ti
 point inside the 250 ms period. It read 26 ms to 255 ms, and the mean was 143 ms. So the delay is
 flat across one period, and it is not a fixed cost.
 
+**A drop that does not hold is not a drop.** So I asked what can write a key back, and the answer is
+a closed set. Every Redis write here runs one of the 3 Lua scripts, and 3 callers reach them.
+`reserve` refuses a closed sale before it touches Redis. `armIfDue` and `rebuildIfBehind` both
+return on any phase but `live`. The worker calls `HDEL` alone, and `HDEL` creates no key.
+
+The live stack agrees with that reading. A closed sale took 300 more purchase requests, and each one
+answered `over` with no key written. The sweep then ran 80 more times and wrote nothing back. A
+restart wrote nothing back either. The strongest case is the replay. I rewound the consumer group to
+the start of the topic, then restarted the process. The workers then read 20,436 recorded wins
+against a retired sale. Redis stayed empty through all of it, and `orders` held the same 1,000 rows.
+
+Redis gives the memory back at the process level, and not at the key level alone. `used_memory` read
+about 1.50 MB before each of 3 sales. It rose by 96 KB to 137 KB at the peak, then settled below the
+starting number every time. The rise is larger than the 5 keys, because 500 open connections carry
+buffers of their own.
+
 **The trap is in Postgres, and not in Redis.** The order rows outlive the campaign that wrote them.
 A second campaign against the same database starts sold out. The first rebuild reads the old
 winners out of `orders`, and it puts the counter back where the last sale ended.

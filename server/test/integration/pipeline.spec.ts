@@ -409,4 +409,55 @@ describe('the pipeline', () => {
       await redis.quit()
     }
   })
+  it('a server that starts after the sale ended takes no Redis key on', async () => {
+    const { gate, pipeline, namespace } = await start(10)
+    await Promise.all(['a', 'b', 'c'].map((one) => pipeline.reserve(one, DURING)))
+    expect(await pipeline.drained()).toBe(true)
+    await pool.query('UPDATE stock SET end_at = $1 WHERE id = 1', [new Date(DURING)])
+
+    const redis = createClient({ url: inject('redisUrl') })
+    await redis.connect()
+    try {
+      const tail = `*.${namespace}`
+      let found = await redis.keys(tail)
+      for (let tries = 0; tries < 40 && found.length > 0; tries += 1) {
+        await new Promise((ready) => setTimeout(ready, 100))
+        found = await redis.keys(tail)
+      }
+      expect(found).toEqual([])
+
+      // The first process goes, so the second one owns the consumer group alone.
+      await pipeline.close()
+      open = open.filter((one) => one !== pipeline)
+
+      // A restart against a sale that already ended. The 3 order rows are still
+      // there, so a boot that ignores the clock rebuilds all five keys from them.
+      // The new worker reads the topic from the start as well, and a replayed win
+      // must put no key back either.
+      const second = await Pipeline.start({
+        redisUrl: inject('redisUrl'),
+        kafkaBrokers: [inject('kafkaBroker')],
+        workers: 1,
+        sale: await gate.campaign(),
+        gate,
+        namespace,
+      })
+      open.push(second)
+
+      // `counts.rebuilds` carries the proof, and the key list does not. One sweep
+      // arms and then retires in the same tick, so a sample between two sweeps
+      // reads an empty Redis either way.
+      await new Promise((ready) => setTimeout(ready, 800))
+      expect(await redis.keys(tail)).toEqual([])
+      expect(second.counts.rebuilds).toBe(0)
+      expect(await second.left()).toBe(7)
+
+      expect(await second.reserve('late', Date.now())).toBe('over')
+      expect(await redis.keys(tail)).toEqual([])
+      // The replay wrote no second row for any of the 3 winners.
+      expect(await gate.winners()).toHaveLength(3)
+    } finally {
+      await redis.quit()
+    }
+  })
 })

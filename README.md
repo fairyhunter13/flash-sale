@@ -41,7 +41,7 @@ Without `--units` the unit count does not move, so a running sale keeps what it 
 
 `.env.example` holds addresses and sizes only, and the server reads it on every start. Postgres, Redis or Kafka may already run on your machine. Where one does, copy `.env.example` to `.env`, then change `POSTGRES_PORT`, `REDIS_PORT` or `KAFKA_PORT` and the URL beside it. The server reads `.env` second, so it wins. Docker Compose reads `.env` as well, which is why a port change belongs there and not in `.env.example`.
 
-`npm test` runs all 80 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
+`npm test` runs all 81 tests. The 23 unit tests each check one module, and none of them touch a container. Run them on their own with `npm run test:unit`, and they finish in about a second, even with Docker stopped.
 
 The 57 integration tests use real Postgres, Redis and Kafka. Testcontainers starts each one in Docker for the run and throws it away after. I mocked nothing. Docker must be running when you start them with `npm run test:integration`.
 
@@ -158,6 +158,8 @@ The start of the window works the same way. Redis takes the sale on 5 seconds be
 I proved the drop under load. `npm run stress` drives 10,000 buyers at 1,000 units, closes the window, then waits for the sweep. The suite passed 26 runs. Once the queue drained, the 5 keys held 48,416 bytes in 24 of them and 52,512 in the other 2. The step is `sale:buyers`, and its hash table grows in one jump of 4,096 bytes. Redis then held 0 bytes 53 ms to 409 ms later, and Postgres kept all 1,000 order rows every time. The wait is the next sweep, which runs every 250 ms.
 
 The high-water mark comes earlier, while the wins are still in flight. `sale:issued` reached 44,784 bytes and `sale:outbox` reached 7,224, so 6 runs measured 99,320 to 104,520 bytes over the 5 keys. Both hashes empty as Postgres commits. That is the memory a sale needs while it runs, and it is about twice what it leaves behind.
+
+The drop holds after the sale as well. A closed sale took 300 more purchase requests, and each one answered `over` with no key written. The sweep then ran 80 more times and wrote nothing back. A restart wrote nothing back either. A rewound Kafka group replayed 20,436 recorded wins through the workers, and Redis stayed empty while `orders` held the same 1,000 rows. Redis gives the memory back at the process level too. `used_memory` read about 1.50 MB before each of 3 sales, and it rose by 96 KB to 137 KB at the peak. It then settled below the starting number every time.
 
 That leaves one trap, and it is in Postgres and not in Redis. The order rows outlive the campaign that wrote them. So a second campaign against the same database starts sold out. The first rebuild reads the old winners out of `orders`. It then sets the counter back to where the last sale ended. `UNIQUE (user_id)` also refuses a buyer who won the first time. Moving the window with `npm run sale:window` does not touch any of that. `npm run reset` drops Postgres, Redis and the Kafka topic together, and it is the only clean start for a second campaign.
 
