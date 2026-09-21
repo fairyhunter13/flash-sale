@@ -4,11 +4,17 @@
  * between `INCR` and the Kafka send lost a unit on a crash.
  */
 
-/** KEYS: buyers, sold, outbox. ARGV: buyerId, stock. Returns [outcome, seq, why]. */
+/** KEYS: buyers, sold, outbox, live. ARGV: buyerId, stock. Returns [outcome, seq, why]. */
 export const RESERVE = `
-local buyers, sold, outbox = KEYS[1], KEYS[2], KEYS[3]
+local buyers, sold, outbox, live = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 local buyer = ARGV[1]
 local stock = tonumber(ARGV[2])
+
+-- A missing flag means Redis lost the sale. The counter would restart at 1 and
+-- hand out a place Postgres already holds, so the script refuses before it counts.
+if redis.call('EXISTS', live) == 0 then
+  return {'lost', '0', ''}
+end
 
 if tonumber(redis.call('GET', sold) or '0') >= stock then
   return {'sold-out', '0', 'fast'}
@@ -29,11 +35,11 @@ return {'won', tostring(seq), ''}
 `
 
 /**
- * KEYS: buyers, sold, outbox. ARGV: highestSeq, then every winner.
+ * KEYS: buyers, sold, outbox, live. ARGV: highestSeq, then every winner.
  * `sale:sold` only ever goes up, so a rebuild cannot hand out a place twice.
  */
 export const REHYDRATE = `
-local buyers, sold, outbox = KEYS[1], KEYS[2], KEYS[3]
+local buyers, sold, outbox, live = KEYS[1], KEYS[2], KEYS[3], KEYS[4]
 redis.call('DEL', buyers)
 redis.call('DEL', outbox)
 
@@ -45,5 +51,8 @@ local highest = tonumber(ARGV[1])
 if highest > tonumber(redis.call('GET', sold) or '0') then
   redis.call('SET', sold, highest)
 end
-return redis.call('GET', sold)
+
+-- The flag is written last, so a script that dies half way leaves the sale refused.
+redis.call('SET', live, '1')
+return redis.call('GET', sold) or '0'
 `

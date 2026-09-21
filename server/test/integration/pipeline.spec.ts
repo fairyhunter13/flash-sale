@@ -207,4 +207,65 @@ describe('the pipeline', () => {
     // 3 units are gone. A rebuild that wrote 2 would sell one place twice.
     expect(await pipeline.left()).toBe(2)
   })
+
+  it('a Redis that loses the whole sale mid-run never issues a place twice', async () => {
+    const { gate, pipeline } = await start(10)
+    await Promise.all(['a', 'b', 'c'].map((one) => pipeline.reserve(one, DURING)))
+    expect(await pipeline.drained()).toBe(true)
+
+    const redis = createClient({ url: inject('redisUrl') })
+    await redis.connect()
+    const tail = `.t_pipe_${run}`
+    // Every key goes, the way a restart with no append-only file loses them.
+    await redis.del([
+      `sale:sold${tail}`,
+      `sale:buyers${tail}`,
+      `sale:outbox${tail}`,
+      `sale:live${tail}`,
+    ])
+
+    expect(await pipeline.reserve('d', DURING)).toBe('won')
+    expect(await pipeline.drained()).toBe(true)
+
+    // Without the rebuild the counter restarts at 1, and buyer `d` holds no row.
+    expect((await gate.winners()).map((one) => one.seq)).toEqual([1, 2, 3, 4])
+    await redis.quit()
+  })
+
+  it('a new sale window takes effect with no restart', async () => {
+    const { pipeline } = await start(10)
+    expect(await pipeline.reserve('early-bird', DURING)).toBe('won')
+
+    // What `npm run sale:window` writes. The process keeps running.
+    await writeCampaign(pool, { stock: 10, startMs: START - 7_200_000, endMs: START - 3_600_000 })
+
+    // The sweep runs every 250 ms. One wait of 2 s covers it, and a single attempt
+    // after the wait keeps the stock intact, so the answer names the window alone.
+    await new Promise((ready) => setTimeout(ready, 2_000))
+    const answer = await pipeline.reserve('after-the-change', DURING)
+
+    // The old code copied the window once in the constructor, so it answered `won` for ever.
+    expect(answer).toBe('over')
+  })
+
+  it('the sweep rebuilds the counter when one erased key puts Redis behind Postgres', async () => {
+    const { pipeline } = await start(10)
+    await Promise.all(['a', 'b', 'c'].map((one) => pipeline.reserve(one, DURING)))
+    expect(await pipeline.drained()).toBe(true)
+
+    const redis = createClient({ url: inject('redisUrl') })
+    await redis.connect()
+    const tail = `.t_pipe_${run}`
+    // `sale:live` survives, so only the sweep's own check can find the loss.
+    await redis.set(`sale:sold${tail}`, '0')
+
+    const until = Date.now() + 15_000
+    while (Number(await redis.get(`sale:sold${tail}`)) < 3 && Date.now() < until) {
+      await new Promise((ready) => setTimeout(ready, 100))
+    }
+
+    expect(Number(await redis.get(`sale:sold${tail}`))).toBe(3)
+    expect(await pipeline.left()).toBe(7)
+    await redis.quit()
+  })
 })

@@ -8,10 +8,13 @@ export const TOPIC = 'sale.wins'
 export const PARTITIONS = 4
 const GROUP = 'sale-writers'
 
-// The only three keys in Redis.
+// The only four keys in Redis.
 export const SOLD_KEY = 'sale:sold'
 export const BUYERS_KEY = 'sale:buyers'
 export const OUTBOX_KEY = 'sale:outbox'
+
+/** Present means Redis still holds the sale it was given. Absent means a rebuild is due. */
+export const LIVE_KEY = 'sale:live'
 
 /** A win that never reached Kafka waits here. The sweep is the only thing that finds it. */
 const SWEEP_MS = 250
@@ -55,16 +58,19 @@ export class Pipeline {
   private readonly producer: Producer
   private readonly consumers: Consumer[] = []
   private readonly gate: Gate
-  private readonly stock: number
-  private readonly window: { startMs: number; endMs: number }
+  private stock: number
+  /** The sweep refreshes it, so `npm run sale:window` takes effect with no restart. */
+  private window: { startMs: number; endMs: number }
   readonly topic: string
   private readonly group: string
   private readonly soldKey: string
   private readonly buyersKey: string
   private readonly outboxKey: string
+  private readonly liveKey: string
   private readonly shas = new Map<string, string>()
   private sweep: NodeJS.Timeout | undefined
   private sweeping = false
+  private restoring: Promise<void> | undefined
   private readonly commits: { timer: NodeJS.Timeout; flush: () => Promise<void> }[] = []
   readonly counts: PipelineCounts = {
     produced: 0,
@@ -87,6 +93,7 @@ export class Pipeline {
     this.soldKey = `${SOLD_KEY}${tail}`
     this.buyersKey = `${BUYERS_KEY}${tail}`
     this.outboxKey = `${OUTBOX_KEY}${tail}`
+    this.liveKey = `${LIVE_KEY}${tail}`
     this.redis = createClient({ url: options.redisUrl })
     this.redis.on('error', (error: Error) => console.error(`redis: ${error.message}`))
     this.kafka = new Kafka({
@@ -132,11 +139,15 @@ export class Pipeline {
     if (state === 'pending') return 'not-open'
     if (state === 'closed') return 'over'
 
-    const [outcome, seq, why] = (await this.runScript(
-      RESERVE,
-      [this.buyersKey, this.soldKey, this.outboxKey],
-      [buyerId, String(this.stock)],
-    )) as [string, string, string]
+    let [outcome, seq, why] = await this.tryReserve(buyerId)
+
+    // Redis lost the sale between two requests. Rebuild from the order rows, then ask
+    // once more. A second `lost` means the rebuild failed, and a buyer gets no guess.
+    if (outcome === 'lost') {
+      await this.restore()
+      ;[outcome, seq, why] = await this.tryReserve(buyerId)
+      if (outcome === 'lost') throw new Error('Redis lost the sale, and the rebuild did not take.')
+    }
 
     if (outcome === 'sold-out') {
       if (why === 'fast') this.counts.refusedByFastPath += 1
@@ -151,6 +162,29 @@ export class Pipeline {
       console.error(`kafka send failed, the sweep holds the win: ${error.message}`),
     )
     return 'won'
+  }
+
+  private async tryReserve(buyerId: string): Promise<[string, string, string]> {
+    return (await this.runScript(
+      RESERVE,
+      [this.buyersKey, this.soldKey, this.outboxKey, this.liveKey],
+      [buyerId, String(this.stock)],
+    )) as [string, string, string]
+  }
+
+  /**
+   * One rebuild at a time. Every caller that finds the sale gone waits on the same
+   * promise, so a burst of requests never starts a second `rehydrate`.
+   */
+  private async restore(): Promise<void> {
+    this.restoring ??= this.rehydrate()
+      .then((done) => {
+        console.warn(`Redis lost the sale. It was rebuilt from ${done.buyers} order rows in ${done.ms} ms.`)
+      })
+      .finally(() => {
+        this.restoring = undefined
+      })
+    await this.restoring
   }
 
   async left(): Promise<number> {
@@ -188,7 +222,7 @@ export class Pipeline {
     const highest = winners.reduce((top, one) => Math.max(top, one.seq), 0)
     await this.runScript(
       REHYDRATE,
-      [this.buyersKey, this.soldKey, this.outboxKey],
+      [this.buyersKey, this.soldKey, this.outboxKey, this.liveKey],
       [String(highest), ...winners.map((one) => one.buyerId)],
     )
     return { buyers: winners.length, highestSeq: highest, ms: Date.now() - startedAt }
@@ -244,6 +278,8 @@ export class Pipeline {
     if (this.sweeping) return
     this.sweeping = true
     try {
+      await this.refreshCampaign()
+      await this.rebuildIfBehind()
       const stranded = await this.redis.hGetAll(this.outboxKey)
       for (const [buyerId, seq] of Object.entries(stranded)) await this.deliver(buyerId, Number(seq))
     } catch (error) {
@@ -254,11 +290,37 @@ export class Pipeline {
   }
 
   /**
-   * No counter in Redis means Redis was lost. Rebuild only then.
-   * A live Redis runs ahead of Postgres by what the queue holds.
+   * The sale window and the unit count are one row in Postgres, so an operator changes them
+   * with `npm run sale:window` and no restart. `reserve` still reads an in-memory copy, and
+   * this refresh is what keeps that copy at most one sweep old.
+   */
+  private async refreshCampaign(): Promise<void> {
+    const sale = await this.gate.campaign()
+    this.stock = sale.stock
+    this.window = { startMs: sale.startMs, endMs: sale.endMs }
+  }
+
+  /**
+   * Redis issues the place, and Postgres records it later. So `sale:sold` is never below
+   * the highest place on disk while Redis is whole. Below it, Redis lost the counter, and
+   * the next buyer would take a place that Postgres already holds.
+   *
+   * The `sale:live` flag catches a whole store that went, on the first request. One erased
+   * key leaves the flag, so the check below is what catches that one. It costs one indexed
+   * `MAX(seq)` read every 250 ms.
+   */
+  private async rebuildIfBehind(): Promise<void> {
+    const sold = Number((await this.redis.get(this.soldKey)) ?? 0)
+    if (sold >= (await this.gate.highestSeq())) return
+    await this.restore()
+  }
+
+  /**
+   * No `sale:live` flag means Redis never held this sale, or it lost it. Rebuild then,
+   * and write the flag. A live Redis runs ahead of Postgres by what the queue holds.
    */
   private async restoreIfEmpty(): Promise<void> {
-    if ((await this.redis.exists(this.soldKey)) === 1) return
+    if ((await this.redis.exists(this.liveKey)) === 1) return
     const restored = await this.rehydrate()
     if (restored.buyers > 0) {
       console.warn(`Redis held no sale, so it was rebuilt from ${restored.buyers} order rows in ${restored.ms} ms.`)

@@ -162,6 +162,12 @@ export class Gate {
     return rows.map((row) => ({ buyerId: row.user_id, seq: Number(row.seq ?? 0) }))
   }
 
+  /** The highest place Postgres holds. `orders_seq_key` makes it one index read. */
+  async highestSeq(): Promise<number> {
+    const { rows } = await this.pool.query<{ top: string | null }>('SELECT MAX(seq) AS top FROM orders')
+    return Number(rows[0]?.top ?? 0)
+  }
+
   /** 0 where no worker read the partition. One transaction wrote it and the order row. */
   async offsetOf(topic: string, partition: number): Promise<number> {
     const { rows } = await this.pool.query<{ next_offset: string }>(
