@@ -37,7 +37,7 @@ export type PipelineOptions = {
   readonly gate: Gate
   /**
    * A test sets it, so two test files that share one Redis never read each other's sale.
-   * A second campaign would use the same field. See `docs/design-experiments.md`.
+   * A second campaign would use the same field.
    */
   readonly namespace?: string
 }
