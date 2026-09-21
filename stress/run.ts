@@ -12,7 +12,7 @@ if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE)
 const BASE_URL = process.env['BASE_URL'] ?? 'http://127.0.0.1:3000'
 const DATABASE_URL = process.env['DATABASE_URL'] ?? 'postgres://flash:flash@127.0.0.1:5432/flash'
 const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://127.0.0.1:6379'
-/** The two keys the sale keeps hot. They must match server/src/queue/pipeline.ts. */
+/** These must match server/src/queue/pipeline.ts. */
 const SOLD_KEY = 'sale:sold'
 const BUYERS_KEY = 'sale:buyers'
 /** How long the run waits for the workers to write the last win into Postgres. */
@@ -42,17 +42,10 @@ function assertLocal(name: string, url: string): void {
 type Tally = Record<string, number>
 
 /**
- * Puts every unit back, in both stores, and reports the campaign it restored.
- *
- * The count returns to `total_units`, which the migration wrote, so this file
- * holds no number of its own.
- *
- * Redis holds the live count, so a reset that touches Postgres alone leaves the
- * sale sold out and the next run wins nothing.
- *
- * `queue_offsets` stays. Each row is the point one worker reads from, so a
- * worker that lost it would seek back to offset 0 and write the records of the
- * previous run into the fresh sale.
+ * Puts every unit back, in both stores. The count returns to `total_units`, so
+ * this file holds no number of its own. Redis holds the live count, so a reset
+ * of Postgres alone leaves the sale sold out. `queue_offsets` stays, because a
+ * worker that lost its row would seek to 0 and replay the previous run.
  */
 async function reset(pool: Pool, redis: RedisLike): Promise<number> {
   await pool.query('TRUNCATE orders')
@@ -70,16 +63,10 @@ async function reset(pool: Pool, redis: RedisLike): Promise<number> {
 type RedisLike = { del: (keys: string[]) => Promise<number>; quit: () => Promise<unknown> }
 
 /**
- * Waits until the order rows stop arriving, and reports how long that took.
- *
- * A buyer is told `won` by Redis, and the row lands later, through Kafka. So a
- * count read the moment the drive ends is short by whatever the queue still
- * holds. The wait ends on the wanted count, or on 10 seconds with no new row.
- *
- * 10 and not 2. A fetch pause of 2.9 seconds was measured mid-drain, and the
- * run then reported 760 of 1,000 rows although all 1,000 landed a moment
- * later. A quiet window shorter than the longest pause reports a healthy queue
- * as a failure.
+ * Waits until the order rows stop arriving. Redis answers `won` and the row
+ * lands later, so a count read at the end of the drive is short. The wait ends
+ * on the wanted count, or on 10 quiet seconds. 10 and not 2: a 2.9 second fetch
+ * pause made one run report 760 of 1,000 rows that all landed a moment later.
  */
 async function drain(pool: Pool, wanted: number): Promise<{ rows: number; ms: number }> {
   const startedAt = performance.now()
@@ -96,10 +83,7 @@ async function drain(pool: Pool, wanted: number): Promise<{ rows: number; ms: nu
   return { rows, ms: Math.round(performance.now() - startedAt) }
 }
 
-/**
- * Samples how many Postgres backends the server holds while the run is in
- * flight. It is the number the connection cap is there to bound.
- */
+/** The number the connection cap is there to bound. */
 function watchBackends(pool: Pool): { stop: () => number } {
   let peak = 0
   const timer = setInterval(() => {

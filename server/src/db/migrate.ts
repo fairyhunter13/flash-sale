@@ -5,11 +5,8 @@ import { readConfig } from '../config.ts'
 
 const DIRECTORY = new URL('../../sql/migrations/', import.meta.url)
 
-/**
- * One number, shared by every process that migrates this database. Postgres
- * hands the lock to one caller at a time, so 2 servers that boot together
- * apply each file once between them.
- */
+/** Postgres hands this lock to one caller, so 2 servers booting together
+ * apply each file once between them. */
 const LOCK_KEY = 8_713_220_101
 
 const LEDGER = `CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -31,11 +28,8 @@ export function migrations(): readonly Migration[] {
 }
 
 /**
- * Applies every migration the database has not seen, and reports the names.
- *
- * Each file commits with its own ledger row, so a file that fails leaves no
- * half-applied schema and no row that claims it ran. Never edit an applied
- * file. A change to the campaign is a new file.
+ * Each file commits with its own ledger row, so a failed file leaves no
+ * half-applied schema. Never edit an applied file. A change is a new file.
  */
 export async function migrate(pool: Pool): Promise<readonly string[]> {
   const client: PoolClient = await pool.connect()

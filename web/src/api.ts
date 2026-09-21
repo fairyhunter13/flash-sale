@@ -13,10 +13,8 @@ export type Outcome = 'won' | 'already-bought' | 'sold-out' | 'not-open' | 'over
 export type Held = { readonly held: true; readonly at: string } | { readonly held: false } | 'unknown'
 
 /**
- * Everything the page needs from the server, behind one type.
- *
- * App takes this as a prop, so a test passes a plain object and never patches
- * `fetch` or `EventSource` onto the global scope.
+ * Everything the page needs from the server. App takes it as a prop, so a test
+ * passes a plain object and never patches `fetch` onto the global scope.
  */
 export type Api = {
   /** Pushes each sale state. Returns the function that closes the stream. */

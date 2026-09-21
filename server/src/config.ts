@@ -34,10 +34,8 @@ class Reader {
   readonly problems: string[] = []
   private readonly env: Env
 
-  // A field and an assignment, and never a constructor parameter property.
-  // `node --experimental-strip-types` deletes types and rewrites nothing, so a
-  // parameter property is a SyntaxError there. The same shape is used in every
-  // class in this package.
+  // A field and an assignment, never a constructor parameter property:
+  // `node --experimental-strip-types` rewrites nothing, so that is a SyntaxError.
   constructor(env: Env) {
     this.env = env
   }

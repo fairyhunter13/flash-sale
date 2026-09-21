@@ -6,9 +6,8 @@ import { readSale } from './index.ts'
 export const TICK_MS = 250
 
 /**
- * One timer for the whole process, and never one per open page. It reads the
- * sale TICK_MS apart, so 5,000 open pages cost the same 4 reads a second as
- * one. A tick writes only when the text differs from the last one.
+ * One timer for the process, never one per page, so 5,000 open pages cost the
+ * same 4 reads a second as one. A tick writes only when the text changed.
  */
 export class SaleTicker {
   private readonly clients = new Set<FastifyReply>()
@@ -68,8 +67,8 @@ export class SaleTicker {
     try {
       body = JSON.stringify(await readSale(this.gate, this.pipeline))
     } catch {
-      // A store stopped answering. Every page is closed, because a stream that
-      // keeps its last state open tells the buyer a stale count is live.
+      // A store stopped answering. An open stream would show a stale count as
+      // a live one, so every page is closed.
       this.closeAll()
       return
     }

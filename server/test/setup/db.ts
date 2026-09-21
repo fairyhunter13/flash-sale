@@ -2,12 +2,9 @@ import { Pool } from 'pg'
 import { migrate } from '../../src/db/migrate.ts'
 
 /**
- * One Postgres schema per test file, so two files never share the orders
- * table. With one shared table a DELETE in one file wiped the rows another
- * file had just written, and the files run in parallel.
- *
- * The migrations run against that schema, so every test meets the tables and
- * the campaign row the server meets.
+ * One Postgres schema per test file, because the files run in parallel and a
+ * DELETE in one wiped rows another had just written. The migrations run against
+ * that schema, so every test meets the tables the server meets.
  */
 export async function poolFor(databaseUrl: string, name: string): Promise<Pool> {
   const admin = new Pool({ connectionString: databaseUrl, max: 1 })

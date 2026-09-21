@@ -63,9 +63,8 @@ export async function buildApp(
 const WEB_DIST = fileURLToPath(new URL('../../web/dist/', import.meta.url))
 
 /**
- * Serves the built page from the same origin as the API, so a reader runs
- * `npm run build` then `npm start` and opens one URL. In development Vite
- * serves the page instead and proxies /api here, so this does nothing.
+ * Serves the built page from the API origin, so one URL runs the whole app. In
+ * development Vite serves the page and proxies /api here, so this does nothing.
  */
 async function serveWeb(fastify: FastifyInstance): Promise<void> {
   if (!existsSync(WEB_DIST)) {
@@ -83,13 +82,11 @@ async function main(): Promise<void> {
   const applied = await migrate(migrations).finally(() => migrations.end())
   if (applied.length > 0) console.log(`applied ${applied.join(', ')}`)
 
-  // The cap is the whole answer to "what if a million people arrive". Postgres
-  // never sees more than DB_POOL_MAX connections from this process, whatever
-  // the number of open sockets in front of it.
+  // Postgres never sees more than DB_POOL_MAX connections from this process,
+  // whatever the number of open sockets in front of it.
   const pool = new Pool({ connectionString: config.databaseUrl, max: config.dbPoolMax })
-  // A client the pool still holds sends its error to `pool.on('error')`. A
-  // client a request already checked out does not, so without the second line
-  // that error reaches no handler and Node ends the process mid-sale.
+  // A checked-out client does not reach `pool.on('error')`, so without the
+  // second line its error ends the process mid-sale.
   pool.on('error', (error: Error) => console.error(`an idle database client failed: ${error.message}`))
   pool.on('connect', (client) => client.on('error', () => {}))
   const app = await buildApp(config, pool)

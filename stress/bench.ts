@@ -15,10 +15,7 @@ const CACHE_MS = 250
 
 /**
  * Puts every unit back. Without it a sold-out sale answers every POST from the
- * cached read, and the number below would measure the fast path and not the
- * transaction.
- *
- * The count returns to `total_units`, which the migration wrote.
+ * cached read, so the number below would measure the fast path.
  */
 async function openTheSale(): Promise<void> {
   const pool = new Pool({ connectionString: DATABASE_URL, application_name: 'bench' })
@@ -33,14 +30,9 @@ async function openTheSale(): Promise<void> {
 }
 
 /**
- * Throughput only, and never the counts.
- *
- * autocannon reads `amount` as a per-connection quota, so the total it sends
- * is not the total asked for. Issue #228 measured 999,969 sent for a requested
- * 1,000,000 with no error reported. So run.ts owns every count, and this file
- * owns the requests a second and the latency.
- *
- * A bench that also checked a count would be wrong, not merely incomplete.
+ * Throughput only, and never the counts. autocannon reads `amount` as a
+ * per-connection quota, so it sent 999,969 for a requested 1,000,000 with no
+ * error (issue #228). run.ts owns every count. This file owns the latency.
  */
 async function measure(name: string, options: autocannon.Options): Promise<Result> {
   console.log(`\n${name}`)

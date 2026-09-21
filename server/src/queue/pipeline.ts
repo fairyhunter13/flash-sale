@@ -7,7 +7,7 @@ export const TOPIC = 'sale.wins'
 export const PARTITIONS = 4
 const GROUP = 'sale-writers'
 
-/** The two keys the sale keeps hot. Nothing else lives in Redis. */
+// The only two keys in Redis.
 export const SOLD_KEY = 'sale:sold'
 export const BUYERS_KEY = 'sale:buyers'
 
@@ -18,12 +18,9 @@ export type PipelineOptions = {
   readonly sale: SaleNumbers
   readonly gate: Gate
   /**
-   * A suffix on the two Redis keys, the topic and the group. The server leaves
-   * it empty. A test sets it, so two test files that share one Redis and one
-   * broker never read each other's sale.
-   *
-   * A second campaign would use the same field, with the sale id in it. See
-   * `docs/design-experiments.md`.
+   * A suffix on the Redis keys, the topic and the group. A test sets it, so two
+   * test files that share one Redis never read each other's sale. A second
+   * campaign would use the same field. See `docs/design-experiments.md`.
    */
   readonly namespace?: string
 }
@@ -40,19 +37,13 @@ export type PipelineCounts = {
 }
 
 /**
- * The decision path.
+ * The decision path. Redis answers the buyer, Kafka carries the win, and
+ * `Gate.record` writes it down. The three stores never write each other, so
+ * each one fails on its own.
  *
- * Redis holds the temporary state and answers the buyer. Kafka carries every
- * win to the workers. `Gate.record` writes the permanent state. The three
- * stores never write each other directly, so each one fails on its own.
- *
- * **First come first serve is two promises, and they need different answers.**
- * The winner set is free, because Redis runs one command at a time and `INCR`
- * past the stock cannot happen twice. The recorded order is not free: Kafka
- * keeps order inside one partition only, and several workers write at once. So
- * the number `INCR` returns travels in the record and lands in `orders.seq`.
- * `ORDER BY seq` then reads the exact arrival order, whatever order the rows
- * landed in.
+ * Kafka keeps order inside one partition only, and several workers write at
+ * once. So the number `INCR` returns travels in the record into `orders.seq`,
+ * and `ORDER BY seq` reads the arrival order whatever order the rows landed in.
  */
 export class Pipeline {
   private readonly redis: RedisClientType
@@ -63,7 +54,6 @@ export class Pipeline {
   private readonly gate: Gate
   private readonly stock: number
   private readonly window: { startMs: number; endMs: number }
-  /** The topic this sale writes to, and the group that reads it. */
   readonly topic: string
   private readonly group: string
   private readonly soldKey: string
@@ -98,8 +88,8 @@ export class Pipeline {
     })
     this.admin = this.kafka.admin()
     this.producer = this.kafka.producer({
-      // Exactly-once inside Kafka. The broker drops a record it already holds,
-      // so a retried send after a timeout writes one record and not two.
+      // The broker drops a record it already holds, so a retried send after a
+      // timeout writes one record and not two.
       idempotent: true,
       maxInFlightRequests: 5,
       createPartitioner: Partitioners.DefaultPartitioner,
@@ -122,14 +112,9 @@ export class Pipeline {
   /**
    * Answers one buyer, and never touches Postgres.
    *
-   * The counter is read before anything is written. `sale:sold` only goes up,
-   * so a reading at or past the stock can never fall back under it, and a
-   * buyer refused there writes nothing at all. In a sale of 1,000 units and
-   * 1,000,000 buyers that is 999,000 of them.
-   *
-   * The read is a fast path and never the decision. `INCR` past the stock is
-   * what refuses a buyer, so a reading that arrives one moment stale costs the
-   * normal path and never a wrong answer.
+   * The `GET` is a fast path and never the decision. `sale:sold` only goes up,
+   * so a buyer refused there writes nothing. `INCR` past the stock is what
+   * refuses a buyer, so a stale read costs one call and never a wrong answer.
    */
   async reserve(buyerId: string, nowMs: number = Date.now()): Promise<Outcome> {
     const state = saleState(nowMs, 1, this.window)
@@ -147,9 +132,8 @@ export class Pipeline {
 
     const seq = await this.redis.incr(this.soldKey)
     if (seq > this.stock) {
-      // This buyer holds nothing, so the set has no reason to keep them. Left
-      // in, the set would grow with the traffic rather than with the stock,
-      // and a retry would read `already-bought` for a unit never won.
+      // Left in the set, this buyer would read `already-bought` on a retry for
+      // a unit they never won, and the set would grow with the traffic.
       await this.redis.sRem(this.buyersKey, buyerId)
       this.counts.losersRemoved += 1
       return 'sold-out'
@@ -164,30 +148,21 @@ export class Pipeline {
     return 'won'
   }
 
-  /** Units the sale believes are left, read from the hot state. */
   async left(): Promise<number> {
     return Math.max(0, this.stock - Number((await this.redis.get(this.soldKey)) ?? 0))
   }
 
-  /**
-   * How many buyers the set holds. A refused buyer is removed again, so the
-   * number follows the stock and never the traffic.
-   */
+  /** A refused buyer is removed, so this follows the stock, not the traffic. */
   async buyersHeld(): Promise<number> {
     return this.redis.sCard(this.buyersKey)
   }
 
-  /**
-   * Waits until the workers wrote every win this process produced, and reports
-   * whether they did. A test and the stress runner both need the point where
-   * Postgres holds the whole sale.
-   */
+  /** Waits until Postgres holds every win this process produced. */
   async drained(limitMs = 30_000): Promise<boolean> {
     const until = Date.now() + limitMs
     while (Date.now() < until) {
-      // A replay and a duplicate buyer are the same record a second time, so
-      // neither counts. Counted, they hid a record still in flight and this
-      // returned true at 49 of 50 order rows on a 4-worker run.
+      // A replay and a duplicate buyer are one record twice, so neither counts.
+      // Counted, this returned true at 49 of 50 rows on a 4-worker run.
       const done = this.counts.written + this.counts.refusedByDatabase
       if (done >= this.counts.produced) return true
       await new Promise((ready) => setTimeout(ready, 25))
@@ -196,15 +171,10 @@ export class Pipeline {
   }
 
   /**
-   * Rebuilds the hot state from the database.
-   *
-   * The counter comes from `max(seq)` and never from the row count. A count
-   * would hand the next buyer a place an earlier buyer already holds, and two
-   * buyers would then share one place in the queue.
-   *
-   * **The rebuild is exact only after the queue drains.** A win still in Kafka
-   * has no order row, so Postgres is short by exactly that number until the
-   * workers catch up.
+   * Rebuilds the hot state from the database. The counter comes from
+   * `max(seq)`, never the row count, because a count would hand the next buyer
+   * a place an earlier buyer holds. A win still in Kafka has no order row, so
+   * the rebuild is exact only after the queue drains.
    */
   async rehydrate(): Promise<{ buyers: number; highestSeq: number; ms: number }> {
     const startedAt = Date.now()
@@ -224,9 +194,8 @@ export class Pipeline {
   }
 
   /**
-   * A boot with no counter in Redis is a Redis that was lost, so the state is
-   * rebuilt. A boot with a counter leaves it alone, because a live Redis can
-   * be ahead of Postgres by whatever the queue still holds.
+   * No counter in Redis means Redis was lost, so rebuild. A counter is left
+   * alone, because a live Redis runs ahead of Postgres by what the queue holds.
    */
   private async restoreIfEmpty(): Promise<void> {
     if ((await this.redis.exists(this.soldKey)) === 1) return
@@ -237,14 +206,9 @@ export class Pipeline {
   }
 
   /**
-   * One consumer in the group, with Postgres as the only offset store.
-   *
-   * `autoCommit` is off. Kafka commits on a timer, so a worker that dies can
-   * leave a committed offset past the row it never wrote, and the next owner
-   * of that partition then starts after the lost record. Measured on this
-   * design: 201 of 1,000 rows never landed. So the group commits nothing, and
-   * each new owner seeks to the `queue_offsets` row that the order row was
-   * written with.
+   * One consumer, with Postgres as the only offset store. `autoCommit` is off:
+   * Kafka commits on a timer, so a dead worker can leave an offset past a row
+   * it never wrote. Measured on this design, 201 of 1,000 rows never landed.
    */
   private async startWorker(): Promise<void> {
     const consumer = this.kafka.consumer({
@@ -257,7 +221,7 @@ export class Pipeline {
     await consumer.subscribe({ topic: this.topic, fromBeginning: true })
 
     // A group join can arrive before `run` returns, and `seek` refuses one
-    // then. So each seek waits for this promise, which the last line resolves.
+    // then. So each seek waits for this promise.
     let started: () => void = () => {}
     const running = new Promise<void>((ready) => {
       started = ready
@@ -273,8 +237,8 @@ export class Pipeline {
             consumer.seek({ topic: this.topic, partition, offset: String(next) })
           }
         } catch (error) {
-          // A seek that fails on a closing consumer costs nothing, because the
-          // next owner of the partition seeks to the same row.
+          // A failed seek on a closing consumer costs nothing. The next owner
+          // seeks to the same row.
           console.error(`the worker could not seek: ${(error as Error).message}`)
         }
       })()

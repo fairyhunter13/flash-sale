@@ -12,20 +12,14 @@ declare module 'vitest' {
 }
 
 /**
- * The port on the host that the test broker answers on.
- *
- * A Kafka client is told where the broker is by the broker itself, in
- * `advertised.listeners`. That address must already be right when the broker
- * starts, so the port cannot be one the host picks at random.
+ * The broker tells a client its own address, from `advertised.listeners`. That
+ * address must be right at start, so this port cannot be a random one.
  */
 const KAFKA_HOST_PORT = 19_092
 
 /**
- * One Postgres, one Redis and one Kafka for the whole run. So `npm test` is
- * the whole command.
- *
- * The three start at the same time, because none of them needs another one
- * first. Kafka is the slow one, at about 20 seconds.
+ * One Postgres, one Redis and one Kafka for the whole run, so `npm test` is the
+ * whole command. The three start together. Kafka takes about 20 seconds.
  */
 export default async function setup(project: TestProject) {
   const [postgres, redis, kafka] = await Promise.all([
