@@ -318,8 +318,7 @@ Acceptance: I ship it when three things hold. Every command is in the README, an
 
 ## Traceability
 
-Three checks, each one command.
+Two checks, each one command.
 
 1. Run `npx vitest list --json=/tmp/nodes.json`. The output has to contain every node ID this file claims. `vitest list` ignores `--reporter`, and only the `--json=<path>` form writes anything to disk. A row that names a test the runner never collects proves nothing.
 2. Every `T-nn` names at least one `D-nn`. Every `D-nn` gets named by at least one `T-nn`. I check both directions with an `awk` pass over the two documents.
-3. The map has to agree. When I build the map over this root, it reports 60 open gaps, and I name all 60. Of those, 56 are parts the builder derived from the code, and no sentence gives them a reason. The other 4 are qualities that conceptor cannot grade yet. T-20, T-43, T-44 and T-45 cover the part a check can read. They run in the suite without Python and without a conceptor install.
